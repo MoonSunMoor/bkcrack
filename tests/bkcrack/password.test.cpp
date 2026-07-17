@@ -86,6 +86,26 @@ TEST("bruteforce password of 8 characters")
     CHECK(progress.state == Progress::State::EarlyExit);
 }
 
+TEST("bruteforce password of 7 bytes with binary charset")
+{
+    const auto charset  = std::vector<std::uint8_t>{0x00, 0x7f, 0x80, 0xff};
+    const auto password = std::string{static_cast<char>(0xff), static_cast<char>(0x80), static_cast<char>(0x7f),
+                                      static_cast<char>(0x00), static_cast<char>(0x80), static_cast<char>(0x7f),
+                                      static_cast<char>(0xff)};
+    auto       start    = std::string{};
+    auto       os       = std::ostringstream{};
+    auto       progress = Progress{os};
+    const auto result   = recoverPassword(Keys{password}, charset, 7, 7, start, 1, false, progress);
+
+    CHECK(result.size() == 1);
+    CHECK(result[0] == password);
+
+    CHECK(start == "");
+    CHECK(progress.done == 0);
+    CHECK(progress.total == 0);
+    CHECK(progress.state == Progress::State::EarlyExit);
+}
+
 TEST("bruteforce password of 10 characters")
 {
     auto       start    = std::string{};

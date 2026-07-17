@@ -2,12 +2,14 @@
 
 #include <bkcrack/Crc32Tab.hpp>
 #include <bkcrack/MultTab.hpp>
+#include <bkcrack/RecoveryTab.hpp>
 #include <bkcrack/log.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <bitset>
 #include <iomanip>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -170,6 +172,9 @@ public:
         prefix.clear();
         this->length = length;
 
+        if (7 <= length && !recoveryTab)
+            recoveryTab = std::make_shared<RecoveryTab>(charset);
+
         if (length <= 6)
             searchShort();
         else if (length <= 9)
@@ -259,11 +264,11 @@ private:
             const auto y0_partial = initial.getY() * MultTab::mult + 1;
             const auto z0_partial = Crc32Tab::crc32(initial.getZ(), 0);
 
-            for (const auto pi : charset)
+            const auto* y0DeltaRow = recoveryTab->getY0DeltaRow(lsb(x0_partial));
+            for (auto candidateIndex = std::size_t{}; candidateIndex < charset.size(); ++candidateIndex)
             {
                 // finish to update the cipher state
-                const auto x0 = x0_partial ^ Crc32Tab::crc32(0, pi);
-                const auto y0 = y0_partial + MultTab::mult * lsb(x0);
+                const auto y0 = y0_partial + y0DeltaRow[candidateIndex];
                 const auto z0 = z0_partial ^ Crc32Tab::crc32(0, msb(y0));
 
                 // SixCharactersRecovery::search is inlined below for performance
@@ -271,6 +276,9 @@ private:
                 // check compatible Z0[16,32)
                 if (!z0_16_32[z0 >> 16])
                     continue;
+
+                const auto pi = charset[candidateIndex];
+                const auto x0 = x0_partial ^ Crc32Tab::crc32(0, pi);
 
                 prefix.back() = pi;
 
@@ -486,6 +494,9 @@ private:
     /// Set of characters to generate password candidates
     const std::vector<std::uint8_t>& charset;
 
+    /// Shared between parallel worker copies and initialized only for long password searches
+    std::shared_ptr<const RecoveryTab> recoveryTab;
+
     std::vector<std::string>& solutions; // shared output vector of valid passwords
     std::mutex&               solutionsMutex;
     const bool                exhaustive;
@@ -541,6 +552,8 @@ public:
     , exhaustive{exhaustive}
     , progress{progress}
     {
+        if (7 <= mask.size() && 0 < factorIndex)
+            recoveryTab = std::make_shared<RecoveryTab>(mask[factorIndex - 1]);
     }
 
     void search(const std::string& start, std::string& restart, int jobs)
@@ -676,11 +689,12 @@ private:
                 const auto y0_partial = afterPrefix.getY() * MultTab::mult + 1;
                 const auto z0_partial = Crc32Tab::crc32(afterPrefix.getZ(), 0);
 
-                for (const auto pi : getCharsetAtDepth(depth))
+                const auto& leafCharset = getCharsetAtDepth(depth);
+                const auto* y0DeltaRow  = recoveryTab->getY0DeltaRow(lsb(x0_partial));
+                for (auto candidateIndex = std::size_t{}; candidateIndex < leafCharset.size(); ++candidateIndex)
                 {
                     // finish to update the cipher state
-                    const auto x0 = x0_partial ^ Crc32Tab::crc32(0, pi);
-                    const auto y0 = y0_partial + MultTab::mult * lsb(x0);
+                    const auto y0 = y0_partial + y0DeltaRow[candidateIndex];
                     const auto z0 = z0_partial ^ Crc32Tab::crc32(0, msb(y0));
 
                     // SixCharactersRecovery::search is inlined below for performance
@@ -688,6 +702,9 @@ private:
                     // check compatible Z0[16,32)
                     if (!z0_16_32[z0 >> 16])
                         continue;
+
+                    const auto pi = leafCharset[candidateIndex];
+                    const auto x0 = x0_partial ^ Crc32Tab::crc32(0, pi);
 
                     decisions.back() = pi;
 
@@ -956,6 +973,9 @@ private:
     }();
 
     const std::size_t suffixSize = mask.size() < 7 ? 0 : mask.size() - factorIndex - 6;
+
+    /// Shared between parallel worker copies when the final decision is a prefix character
+    std::shared_ptr<const RecoveryTab> recoveryTab;
 
     /// \brief Get the charset for the given depth of recursive exploration
     ///
