@@ -48,6 +48,8 @@ private:
 
     const std::size_t index; // starting index of the used plaintext and keystream
 
+    const std::uint8_t x3PlaintextBias; // low X3 projection with zero candidate bytes
+
     std::vector<Keys>& solutions; // shared output vector of valid keys
     std::mutex&        solutionsMutex;
     const bool         exhaustive;

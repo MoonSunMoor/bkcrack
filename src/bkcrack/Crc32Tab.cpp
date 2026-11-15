@@ -21,4 +21,19 @@ Crc32Tab::Crc32Tab()
         crctab[b]           = crc;
         crcinvtab[msb(crc)] = crc << 8 ^ b;
     }
+
+    // Build the linear projection after both CRC tables are initialized.
+    // Each table represents one low X byte with zero plaintext and zero other bytes.
+    for (auto byte = std::size_t{}; byte < xinvlowtab.size(); ++byte)
+        for (auto value = 0u; value < 256; ++value)
+        {
+            auto low  = std::array<std::uint8_t, 4>{};
+            low[byte] = value;
+            auto x    = std::uint32_t{low[0]};
+            for (auto i = 1; i < 4; ++i)
+                x = (crc32(x, 0) & mask<8, 32>) | low[i];
+            for (auto i = 0; i < 4; ++i)
+                x = crc32inv(x, 0);
+            xinvlowtab[byte][value] = lsb(x);
+        }
 }
