@@ -119,6 +119,11 @@ void Attack::testXlist()
     if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - y1Constraint > maxdiff<26>)
         return;
 
+    verifyXlist();
+}
+
+void Attack::verifyXlist()
+{
     // compute X7
     for (auto i = 5; i <= 7; i++)
         xlist[i] = (Crc32Tab::crc32(xlist[i - 1], data.plaintext[index + i - 1]) & mask<8, 32>) // discard the LSB

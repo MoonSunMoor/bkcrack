@@ -41,8 +41,11 @@ private:
     // iterate recursively over Y-lists
     void exploreYlists(int i);
 
-    // check whether the X-list is valid or not
+    // filter candidate X low bytes using the Y1 constraint
     void testXlist();
+
+    // reconstruct full X states, verify plaintext and report solutions
+    void verifyXlist();
 
     const Data& data;
 
