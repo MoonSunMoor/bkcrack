@@ -125,3 +125,23 @@ TEST("exhaustive attack")
     CHECK(progress.total == 16);
     CHECK(progress.state == Progress::State::Normal);
 }
+
+TEST("two-worker exhaustive attack")
+{
+    const auto data     = Data{ciphertext, {}, plaintext, 0, {}};
+    auto       start    = 0;
+    auto       os       = std::ostringstream{};
+    auto       progress = Progress{os};
+
+    const auto result = attack(data, z7_2_32, start, 7, 2, true, progress);
+
+    CHECK(result.size() == 1);
+    CHECK(result[0].getX() == 0xea9b4e4d);
+    CHECK(result[0].getY() == 0xba789085);
+    CHECK(result[0].getZ() == 0x5ff8707d);
+
+    CHECK(start == 16);
+    CHECK(progress.done == 16);
+    CHECK(progress.total == 16);
+    CHECK(progress.state == Progress::State::Normal);
+}

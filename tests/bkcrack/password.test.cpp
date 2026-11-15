@@ -404,3 +404,59 @@ TEST("mask-based recovery with sparse constant characters")
     CHECK(progress.total == 0);
     CHECK(progress.state == Progress::State::EarlyExit);
 }
+
+TEST("exhaustive recovery matches binary charset oracle")
+{
+    const auto charset = std::vector<std::uint8_t>{'a', 'b'};
+    const auto derive  = [](const std::string& password)
+    {
+        auto keys = Keys{};
+        for (const auto c : password)
+            keys.update(static_cast<std::uint8_t>(c));
+        return keys;
+    };
+
+    for (const auto length : {6u, 8u, 10u, 12u})
+    {
+        auto password = std::string(length, 'a');
+        for (auto i = 0u; i < length; ++i)
+            password[i] = "abba"[i % 4];
+        const auto target = derive(password);
+        const auto oracle = [&](unsigned first)
+        {
+            auto expected = std::vector<std::string>{};
+            for (auto size = first; size <= length; ++size)
+                for (auto bits = 0u; bits < (1u << size); ++bits)
+                {
+                    auto candidate = std::string(size, 'a');
+                    for (auto i = 0u; i < size; ++i)
+                        candidate[i] = charset[(bits >> i) & 1];
+                    const auto keys = derive(candidate);
+                    if (keys.getX() == target.getX() && keys.getY() == target.getY() && keys.getZ() == target.getZ())
+                        expected.push_back(candidate);
+                }
+            std::ranges::sort(expected);
+            return expected;
+        };
+        const auto expectedMask = oracle(length);
+        // The short brute-force path always searches lengths zero through six together.
+        const auto expectedBrute = oracle(length <= 6 ? 0 : length);
+        CHECK(std::ranges::find(expectedMask, password) != expectedMask.end());
+
+        for (const auto jobs : {1, 2, 4, 8})
+            for (const auto useMask : {false, true})
+            {
+                auto start    = std::string{};
+                auto os       = std::ostringstream{};
+                auto progress = Progress{os};
+                auto result = useMask ? recoverPassword(target, std::vector<std::vector<std::uint8_t>>(length, charset),
+                                                        start, jobs, true, progress)
+                                      : recoverPassword(target, charset, length, length, start, jobs, true, progress);
+                std::ranges::sort(result);
+                CHECK(result == (useMask ? expectedMask : expectedBrute));
+                CHECK(start.empty());
+                CHECK(progress.state == Progress::State::Normal);
+                CHECK(progress.done == progress.total);
+            }
+    }
+}

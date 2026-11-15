@@ -91,15 +91,15 @@ protected:
             const auto fy  = (y[i] - 1) * MultTab::multInv;
             const auto ffy = (fy - 1) * MultTab::multInv;
 
-            // get possible LSB(Xi)
-            for (const auto xi_0_8 : MultTab::getMsbProdFiber2(msb(ffy - (y[i - 2] & mask<24, 32>))))
+            // get exactly the possible LSB(Xi) values satisfying the Y{i-2} bound
+            const auto& fiber = MultTab::getExactProdFiber(ffy - (y[i - 2] & mask<24, 32>));
+            for (const auto xi_0_8 : fiber)
             {
                 // compute corresponding Y{i-1}
                 const auto yim1 = fy - xi_0_8;
 
-                // filter values with Y{i-2}[24,32)
-                if (ffy - MultTab::multInv * xi_0_8 - (y[i - 2] & mask<24, 32>) <= maxdiff<24> &&
-                    msb(yim1) == msb(y[i - 1]))
+                // filter values with Y{i-1}[24,32)
+                if (msb(yim1) == msb(y[i - 1]))
                 {
                     // add Y{i-1} to the Y-list
                     y[i - 1] = yim1;
