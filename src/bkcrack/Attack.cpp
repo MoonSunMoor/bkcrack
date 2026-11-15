@@ -66,25 +66,39 @@ void Attack::exploreZlists(int i)
     }
     else // the Z-list is complete so iterate over possible Y values
     {
-        // This constraint is shared by every Y candidate for the completed Z-list.
-        y1Constraint = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
+        const auto context = makeZPathContext();
 
         // guess Y7[8,24) and keep prod == (Y7[8,32) - 1) * mult^-1
-        for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(ylist[7]) << 24) - MultTab::multInv;
+        for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(context.yHigh[5]) << 24) - MultTab::multInv;
              y7_8_24 < 1 << 24; y7_8_24 += 1 << 8, prod += MultTab::multInv << 8)
         {
             // Reflect the Y6 bound to get exactly the possible Y7[0,8) values.
-            const auto& fiber = MultTab::getExactProdFiber(maxdiff<24> + (ylist[6] & mask<24, 32>)-prod);
+            const auto& fiber = MultTab::getExactProdFiber(maxdiff<24> + context.yHigh[4] - prod);
             for (const auto y7_0_8 : fiber)
             {
-                ylist[7] = y7_0_8 | y7_8_24 | (ylist[7] & mask<24, 32>);
-                exploreYlists(7);
+                ylist[7] = y7_0_8 | y7_8_24 | context.yHigh[5];
+                exploreYlists(7, context);
             }
         }
     }
 }
 
-void Attack::exploreYlists(int i)
+auto Attack::makeZPathContext() const -> ZPathContext
+{
+    auto context            = ZPathContext{};
+    context.index           = index;
+    context.z               = zlist;
+    context.y1Constraint    = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
+    context.x3PlaintextBias = x3PlaintextBias;
+    // Y0/Y1 are not search constraints; copy only the initialized Y2..Y7 high bytes.
+    for (auto i = std::size_t{}; i < context.yHigh.size(); ++i)
+        context.yHigh[i] = ylist[i + 2] & mask<24, 32>;
+    if (index + contiguousSize < data.keystream.size())
+        context.nextKeystream = data.keystream[index + contiguousSize];
+    return context;
+}
+
+void Attack::exploreYlists(int i, const ZPathContext& context)
 {
     if (i != 3) // the Y-list is not complete so generate Y{i-1} values
     {
@@ -92,50 +106,55 @@ void Attack::exploreYlists(int i)
         const auto ffy = (fy - 1) * MultTab::multInv;
 
         // get exactly the possible LSB(Xi) values satisfying the Y{i-2} bound
-        const auto& fiber = MultTab::getExactProdFiber(ffy - (ylist[i - 2] & mask<24, 32>));
+        const auto& fiber = MultTab::getExactProdFiber(ffy - context.yHigh[i - 4]);
         for (const auto xi_0_8 : fiber)
         {
             // compute corresponding Y{i-1}
             const auto yim1 = fy - xi_0_8;
 
             // filter values with Y{i-1}[24,32)
-            if (msb(yim1) == msb(ylist[i - 1]))
+            if (msb(yim1) == msb(context.yHigh[i - 3]))
             {
                 ylist[i - 1] = yim1;
                 xlist[i]     = xi_0_8;
-                exploreYlists(i - 1);
+                exploreYlists(i - 1, context);
             }
         }
     }
     else // the Y-list is complete so check if the corresponding X-list is valid
-        testXlist();
+        testXlist(context);
 }
 
-void Attack::testXlist()
+void Attack::testXlist(const ZPathContext& context)
 {
     // Reject candidates using only low X3 before reconstructing the full X states.
     const auto x3_0_8 =
-        Crc32Tab::getXim4_0_8(lsb(xlist[4]), lsb(xlist[5]), lsb(xlist[6]), lsb(xlist[7]), x3PlaintextBias);
-    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - y1Constraint > maxdiff<26>)
+        Crc32Tab::getXim4_0_8(lsb(xlist[4]), lsb(xlist[5]), lsb(xlist[6]), lsb(xlist[7]), context.x3PlaintextBias);
+    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - context.y1Constraint > maxdiff<26>)
         return;
 
-    verifyXlist();
+    const auto packedX = std::uint32_t{lsb(xlist[4])} | (std::uint32_t{lsb(xlist[5])} << 8) |
+                         (std::uint32_t{lsb(xlist[6])} << 16) | (std::uint32_t{lsb(xlist[7])} << 24);
+    verifyXlist(context, AttackCandidate{ylist[3], ylist[7], packedX});
 }
 
-void Attack::verifyXlist()
+void Attack::verifyXlist(const ZPathContext& context, const AttackCandidate& candidate)
 {
-    // compute X7
-    for (auto i = 5; i <= 7; i++)
-        xlist[i] = (Crc32Tab::crc32(xlist[i - 1], data.plaintext[index + i - 1]) & mask<8, 32>) // discard the LSB
-                   | lsb(xlist[i]);                                                             // set the LSB
+    const auto index = context.index;
+
+    // Reconstruct X7 locally; verification must not modify the producer's search state.
+    auto x7 = std::uint32_t{lsb(candidate.packedX)};
+    for (auto i = 5; i <= 7; ++i)
+        x7 = (Crc32Tab::crc32(x7, data.plaintext[index + i - 1]) & mask<8, 32>) |
+             ((candidate.packedX >> (8 * (i - 4))) & mask<0, 8>);
 
     // compute X3
-    auto x = xlist[7];
+    auto x = x7;
     for (auto i = 6; i >= 3; i--)
         x = Crc32Tab::crc32inv(x, data.plaintext[index + i]);
 
     // decipher and filter by comparing with remaining contiguous plaintext forward
-    auto keysForward = Keys{xlist[7], ylist[7], zlist[7]};
+    auto keysForward = Keys{x7, candidate.y7, context.z[7]};
     keysForward.update(data.plaintext[index + 7]);
     for (auto p = data.plaintext.begin() + index + 8, c = data.ciphertext.begin() + data.offset + index + 8;
          p != data.plaintext.end(); ++p, ++c)
@@ -148,7 +167,7 @@ void Attack::verifyXlist()
     auto indexForward = data.offset + data.plaintext.size();
 
     // and also backward
-    auto keysBackward = Keys{x, ylist[3], zlist[3]};
+    auto keysBackward = Keys{x, candidate.y3, context.z[3]};
     for (auto p = std::reverse_iterator{data.plaintext.begin() + index + 3},
               c = std::reverse_iterator{data.ciphertext.begin() + data.offset + index + 3};
          p != data.plaintext.rend(); ++p, ++c)

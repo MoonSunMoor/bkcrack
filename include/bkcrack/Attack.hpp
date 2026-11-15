@@ -1,6 +1,7 @@
 #ifndef BKCRACK_ATTACK_HPP
 #define BKCRACK_ATTACK_HPP
 
+#include <bkcrack/AttackContext.hpp>
 #include <bkcrack/Data.hpp>
 #include <bkcrack/Keys.hpp>
 #include <bkcrack/Progress.hpp>
@@ -38,14 +39,17 @@ private:
     // iterate recursively over Z-lists
     void exploreZlists(int i);
 
-    // iterate recursively over Y-lists
-    void exploreYlists(int i);
+    // snapshot the valid constraints after completing a Z-list
+    auto makeZPathContext() const -> ZPathContext;
+
+    // iterate recursively over Y-lists without changing the path constraints
+    void exploreYlists(int i, const ZPathContext& context);
 
     // filter candidate X low bytes using the Y1 constraint
-    void testXlist();
+    void testXlist(const ZPathContext& context);
 
     // reconstruct full X states, verify plaintext and report solutions
-    void verifyXlist();
+    void verifyXlist(const ZPathContext& context, const AttackCandidate& candidate);
 
     const Data& data;
 
@@ -58,11 +62,9 @@ private:
     const bool         exhaustive;
     Progress&          progress;
 
-    std::array<std::uint32_t, contiguousSize> zlist;
-    std::array<std::uint32_t, contiguousSize> ylist; // the first two elements are not used
-    std::array<std::uint32_t, contiguousSize> xlist; // the first four elements are not used
-
-    std::uint32_t y1Constraint{}; // known Y1[26,32) for the current Z-list
+    std::array<std::uint32_t, contiguousSize> zlist{};
+    std::array<std::uint32_t, contiguousSize> ylist{}; // the first two elements are not used
+    std::array<std::uint32_t, contiguousSize> xlist{}; // the first four elements are not used
 };
 
 /// \brief Iterate on Zi[2,32) candidates to try and find complete internal keys

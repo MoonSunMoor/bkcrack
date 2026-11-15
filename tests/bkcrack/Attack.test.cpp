@@ -145,3 +145,44 @@ TEST("two-worker exhaustive attack")
     CHECK(progress.total == 16);
     CHECK(progress.state == Progress::State::Normal);
 }
+
+TEST("reuse worker across completed Z paths")
+{
+    const auto data      = Data{ciphertext, {}, plaintext, 0, {}};
+    auto       solutions = std::vector<Keys>{};
+    auto       mutex     = std::mutex{};
+    auto       os        = std::ostringstream{};
+    auto       progress  = Progress{os};
+    auto       worker    = Attack{data, 7, solutions, mutex, true, progress};
+
+    worker.carryout(z7 & mask<2, 32>);
+    CHECK(solutions.size() == 1);
+    worker.carryout(0);
+    CHECK(solutions.size() == 1);
+    worker.carryout(z7 & mask<2, 32>);
+    CHECK(solutions.size() == 2);
+    for (const auto& keys : solutions)
+    {
+        CHECK(keys.getX() == 0xea9b4e4d);
+        CHECK(keys.getY() == 0xba789085);
+        CHECK(keys.getZ() == 0x5ff8707d);
+    }
+    CHECK(progress.state == Progress::State::Normal);
+}
+
+TEST("incorrect extra plaintext rejects a completed candidate")
+{
+    const auto plaintext2 = std::vector<std::uint8_t>{plaintext.begin() + 2, plaintext.end() - 2};
+    const auto extra    = std::map<int, std::uint8_t>{{-2, (0x65 ^ 0x7d) ^ 1}, {-1, 0x81 ^ 0x0d}, {0, 'H'}, {11, '!'}};
+    const auto data     = Data{ciphertext, {}, plaintext2, 2, extra};
+    auto       start    = 0;
+    auto       os       = std::ostringstream{};
+    auto       progress = Progress{os};
+
+    const auto result = attack(data, z9_2_32, start, 7, 2, true, progress);
+    CHECK(result.empty());
+    CHECK(start == 16);
+    CHECK(progress.done == 16);
+    CHECK(progress.total == 16);
+    CHECK(progress.state == Progress::State::Normal);
+}
