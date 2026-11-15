@@ -9,10 +9,24 @@
 #include <atomic>
 #include <thread>
 
+namespace
+{
+auto getX3PlaintextBias(const Data& data, std::size_t index) -> std::uint8_t
+{
+    auto x = std::uint32_t{};
+    for (auto i = 4; i <= 6; ++i)
+        x = Crc32Tab::crc32(x, data.plaintext[index + i]) & mask<8, 32>;
+    for (auto i = 6; i >= 3; --i)
+        x = Crc32Tab::crc32inv(x, data.plaintext[index + i]);
+    return lsb(x);
+}
+} // namespace
+
 Attack::Attack(const Data& data, std::size_t index, std::vector<Keys>& solutions, std::mutex& solutionsMutex,
                bool exhaustive, Progress& progress)
 : data{data}
 , index{index + 1 - Attack::contiguousSize}
+, x3PlaintextBias{getX3PlaintextBias(data, this->index)}
 , solutions{solutions}
 , solutionsMutex{solutionsMutex}
 , exhaustive{exhaustive}
@@ -52,17 +66,21 @@ void Attack::exploreZlists(int i)
     }
     else // the Z-list is complete so iterate over possible Y values
     {
+        // This constraint is shared by every Y candidate for the completed Z-list.
+        y1Constraint = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
+
         // guess Y7[8,24) and keep prod == (Y7[8,32) - 1) * mult^-1
         for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(ylist[7]) << 24) - MultTab::multInv;
              y7_8_24 < 1 << 24; y7_8_24 += 1 << 8, prod += MultTab::multInv << 8)
-            // get possible Y7[0,8) values
-            for (const auto y7_0_8 : MultTab::getMsbProdFiber3(msb(ylist[6]) - msb(prod)))
-                // filter Y7[0,8) using Y6[24,32)
-                if (prod + MultTab::multInv * y7_0_8 - (ylist[6] & mask<24, 32>) <= maxdiff<24>)
-                {
-                    ylist[7] = y7_0_8 | y7_8_24 | (ylist[7] & mask<24, 32>);
-                    exploreYlists(7);
-                }
+        {
+            // Reflect the Y6 bound to get exactly the possible Y7[0,8) values.
+            const auto& fiber = MultTab::getExactProdFiber(maxdiff<24> + (ylist[6] & mask<24, 32>)-prod);
+            for (const auto y7_0_8 : fiber)
+            {
+                ylist[7] = y7_0_8 | y7_8_24 | (ylist[7] & mask<24, 32>);
+                exploreYlists(7);
+            }
+        }
     }
 }
 
@@ -73,22 +91,18 @@ void Attack::exploreYlists(int i)
         const auto fy  = (ylist[i] - 1) * MultTab::multInv;
         const auto ffy = (fy - 1) * MultTab::multInv;
 
-        // get possible LSB(Xi)
-        for (const auto xi_0_8 : MultTab::getMsbProdFiber2(msb(ffy - (ylist[i - 2] & mask<24, 32>))))
+        // get exactly the possible LSB(Xi) values satisfying the Y{i-2} bound
+        const auto& fiber = MultTab::getExactProdFiber(ffy - (ylist[i - 2] & mask<24, 32>));
+        for (const auto xi_0_8 : fiber)
         {
             // compute corresponding Y{i-1}
             const auto yim1 = fy - xi_0_8;
 
-            // filter values with Y{i-2}[24,32)
-            if (ffy - MultTab::multInv * xi_0_8 - (ylist[i - 2] & mask<24, 32>) <= maxdiff<24> &&
-                msb(yim1) == msb(ylist[i - 1]))
+            // filter values with Y{i-1}[24,32)
+            if (msb(yim1) == msb(ylist[i - 1]))
             {
-                // add Y{i-1} to the Y-list
                 ylist[i - 1] = yim1;
-
-                // set Xi value
-                xlist[i] = xi_0_8;
-
+                xlist[i]     = xi_0_8;
                 exploreYlists(i - 1);
             }
         }
@@ -99,6 +113,17 @@ void Attack::exploreYlists(int i)
 
 void Attack::testXlist()
 {
+    // Reject candidates using only low X3 before reconstructing the full X states.
+    const auto x3_0_8 =
+        Crc32Tab::getXim4_0_8(lsb(xlist[4]), lsb(xlist[5]), lsb(xlist[6]), lsb(xlist[7]), x3PlaintextBias);
+    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - y1Constraint > maxdiff<26>)
+        return;
+
+    verifyXlist();
+}
+
+void Attack::verifyXlist()
+{
     // compute X7
     for (auto i = 5; i <= 7; i++)
         xlist[i] = (Crc32Tab::crc32(xlist[i - 1], data.plaintext[index + i - 1]) & mask<8, 32>) // discard the LSB
@@ -108,11 +133,6 @@ void Attack::testXlist()
     auto x = xlist[7];
     for (auto i = 6; i >= 3; i--)
         x = Crc32Tab::crc32inv(x, data.plaintext[index + i]);
-
-    // check that X3 fits with Y1[26,32)
-    const auto y1_26_32 = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
-    if (((ylist[3] - 1) * MultTab::multInv - lsb(x) - 1) * MultTab::multInv - y1_26_32 > maxdiff<26>)
-        return;
 
     // decipher and filter by comparing with remaining contiguous plaintext forward
     auto keysForward = Keys{xlist[7], ylist[7], zlist[7]};

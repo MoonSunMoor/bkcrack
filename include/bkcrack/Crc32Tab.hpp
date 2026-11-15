@@ -19,6 +19,15 @@ public:
         return crc << 8 ^ instance.crcinvtab[msb(crc)] ^ b;
     }
 
+    /// \brief Project X{i-4}[0,8) from the low bytes of four successive X states.
+    /// \param plaintextBias Projection with all four low bytes zero for the same plaintext.
+    static auto getXim4_0_8(std::uint8_t xim3, std::uint8_t xim2, std::uint8_t xim1, std::uint8_t xi,
+                            std::uint8_t plaintextBias) -> std::uint8_t
+    {
+        return plaintextBias ^ instance.xinvlowtab[0][xim3] ^ instance.xinvlowtab[1][xim2] ^
+               instance.xinvlowtab[2][xim1] ^ instance.xinvlowtab[3][xi];
+    }
+
     /// \return Yi[24,32) from Zi and Z{i-1} using CRC32^-1
     static auto getYi_24_32(std::uint32_t zi, std::uint32_t zim1) -> std::uint32_t
     {
@@ -38,6 +47,8 @@ private:
     // lookup tables
     std::array<std::uint32_t, 256> crctab;
     std::array<std::uint32_t, 256> crcinvtab;
+
+    std::array<std::array<std::uint8_t, 256>, 4> xinvlowtab;
 
     static const Crc32Tab instance;
 };
