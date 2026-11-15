@@ -66,6 +66,9 @@ void Attack::exploreZlists(int i)
     }
     else // the Z-list is complete so iterate over possible Y values
     {
+        // This constraint is shared by every Y candidate for the completed Z-list.
+        y1Constraint = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
+
         // guess Y7[8,24) and keep prod == (Y7[8,32) - 1) * mult^-1
         for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(ylist[7]) << 24) - MultTab::multInv;
              y7_8_24 < 1 << 24; y7_8_24 += 1 << 8, prod += MultTab::multInv << 8)
@@ -113,8 +116,7 @@ void Attack::testXlist()
     // Reject candidates using only low X3 before reconstructing the full X states.
     const auto x3_0_8 =
         Crc32Tab::getXim4_0_8(lsb(xlist[4]), lsb(xlist[5]), lsb(xlist[6]), lsb(xlist[7]), x3PlaintextBias);
-    const auto y1_26_32 = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
-    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - y1_26_32 > maxdiff<26>)
+    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - y1Constraint > maxdiff<26>)
         return;
 
     // compute X7

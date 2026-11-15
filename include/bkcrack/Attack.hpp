@@ -58,6 +58,8 @@ private:
     std::array<std::uint32_t, contiguousSize> zlist;
     std::array<std::uint32_t, contiguousSize> ylist; // the first two elements are not used
     std::array<std::uint32_t, contiguousSize> xlist; // the first four elements are not used
+
+    std::uint32_t y1Constraint{}; // known Y1[26,32) for the current Z-list
 };
 
 /// \brief Iterate on Zi[2,32) candidates to try and find complete internal keys
