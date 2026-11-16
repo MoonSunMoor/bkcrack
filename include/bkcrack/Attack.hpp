@@ -45,7 +45,7 @@ private:
     // iterate recursively over Y-lists without changing the path constraints
     void exploreYlists(int i, const ZPathContext& context);
 
-    // explore the complete Y path with sixteen independent lanes
+    // explore Y3 to Y7 with sixteen independent lanes
     void exploreYlistsAvx512(const ZPathContext& context);
 
     // filter candidate X low bytes using the Y1 constraint

@@ -7,11 +7,28 @@
 
 namespace
 {
-constexpr auto multInv        = MultTab::multInv;
-constexpr auto multInvSquared = multInv * multInv;
-constexpr auto fiberWidth     = maxdiff<24>;
+constexpr auto mult              = MultTab::mult;
+constexpr auto multInv           = MultTab::multInv;
+constexpr auto multInvSquared    = multInv * multInv;
+constexpr auto fiberWidth        = maxdiff<24>;
+constexpr auto yRange            = 1u << 24;
+constexpr auto forwardCellWidth  = 1u << 27;
+constexpr auto forwardGridStep   = 32 * mult;
+constexpr auto forwardReciprocal = std::uint32_t{0xf07f36ab};
 
-// The two neighboring residues contain every byte satisfying d - multInv * u <= fiberWidth.
+// The two possible residues cover every forward byte candidate.
+static_assert(32ull * mult == (1ull << 32) + forwardGridStep);
+static_assert(255ull * (mult - forwardCellWidth) + yRange - 1 < 2ull * forwardCellWidth);
+static_assert(forwardCellWidth - 31 * (mult - forwardCellWidth) > 6 * forwardGridStep);
+static_assert(forwardCellWidth < 8 * forwardGridStep);
+
+// The reciprocal is exact for every uint32 input, not just accepted candidates.
+constexpr auto forwardReciprocalError = std::uint64_t{forwardReciprocal} * forwardGridStep - (1ull << 56);
+static_assert(forwardReciprocalError < forwardGridStep);
+static_assert(std::uint64_t{mask<0, 32>} * forwardReciprocalError < (1ull << 56));
+
+// The two neighboring residues contain every byte satisfying d - multInv * u <=
+// fiberWidth.
 static_assert(311ull * multInv == 264ull * (1ull << 32) - 3796725);
 static_assert((264 * 86) % 311 == 1);
 static_assert(2 * 311ull * fiberWidth < 3ull * (1ull << 32));
@@ -23,13 +40,13 @@ auto broadcast(std::uint32_t value) -> __m512i
     return _mm512_set1_epi32(static_cast<int>(value));
 }
 
-struct ArithmeticFiber
+struct RootFiber
 {
     __m512i   first, second;
     __mmask16 keepFirst, keepSecond;
 };
 
-auto getArithmeticFiber(__m512i difference) -> ArithmeticFiber
+auto getRootFiber(__m512i difference) -> RootFiber
 {
     const auto even = _mm512_mul_epu32(difference, broadcast(311));
     const auto odd  = _mm512_mul_epu32(_mm512_srli_epi64(difference, 32), broadcast(311));
@@ -57,7 +74,45 @@ auto getArithmeticFiber(__m512i difference) -> ArithmeticFiber
     return {first, second, keepFirst, keepSecond};
 }
 
-// Generate the four low-X3 linear maps from CRC's bitwise definition at compile time.
+struct ForwardFiber
+{
+    __m512i   first, second;
+    __m512i   residualFirst, residualSecond;
+    __mmask16 keepFirst, keepSecond;
+};
+
+// Bytes u satisfying uint32(difference - mult*u) < yRange.
+// Since 32*mult = 2^32 + forwardGridStep, u mod 32 is cell or (cell-1) mod 32.
+auto getForwardFiber(__m512i difference) -> ForwardFiber
+{
+    const auto cell   = _mm512_srli_epi32(difference, 27);
+    const auto offset = _mm512_sub_epi32(difference, _mm512_mullo_epi32(cell, broadcast(mult)));
+
+    // Exact division by forwardGridStep, with even and odd products interleaved.
+    const auto even          = _mm512_mul_epu32(offset, broadcast(forwardReciprocal));
+    const auto odd           = _mm512_mul_epu32(_mm512_srli_epi64(offset, 32), broadcast(forwardReciprocal));
+    const auto quotient      = _mm512_mask_blend_epi32(0xaaaa, _mm512_srli_epi64(even, 56), _mm512_srli_epi64(odd, 24));
+    const auto residualFirst = _mm512_sub_epi32(offset, _mm512_mullo_epi32(quotient, broadcast(forwardGridStep)));
+    const auto first         = _mm512_add_epi32(cell, _mm512_slli_epi32(quotient, 5));
+
+    // The second residue can only yield a byte with quotient 6 or 7.
+    const auto secondOffset = _mm512_sub_epi32(
+        _mm512_add_epi32(offset, broadcast(mult)),
+        _mm512_maskz_mov_epi32(_mm512_cmpeq_epi32_mask(cell, _mm512_setzero_si512()), broadcast(forwardGridStep)));
+    const auto quotient7 = _mm512_cmpge_epu32_mask(secondOffset, broadcast(7 * forwardGridStep));
+    const auto second    = _mm512_add_epi32(_mm512_and_si512(_mm512_sub_epi32(cell, broadcast(1)), broadcast(31)),
+                                            _mm512_mask_blend_epi32(quotient7, broadcast(6 * 32), broadcast(7 * 32)));
+    const auto residualSecond =
+        _mm512_sub_epi32(secondOffset, _mm512_mask_blend_epi32(quotient7, broadcast(6 * forwardGridStep),
+                                                               broadcast(7 * forwardGridStep)));
+    const __mmask16 keepFirst = _mm512_cmplt_epu32_mask(offset, broadcast(forwardCellWidth)) &
+                                _mm512_cmplt_epu32_mask(residualFirst, broadcast(yRange));
+    const auto keepSecond = _mm512_cmplt_epu32_mask(residualSecond, broadcast(yRange));
+    return {first, second, residualFirst, residualSecond, keepFirst, keepSecond};
+}
+
+// Generate the four low-X3 linear maps from CRC's bitwise definition at compile
+// time.
 constexpr auto crc32(std::uint32_t x) -> std::uint32_t
 {
     for (auto i = 0; i < 8; ++i)
@@ -106,51 +161,45 @@ auto projectX3(__m512i packed, std::uint8_t bias) -> __m512i
     return _mm512_and_si512(_mm512_xor_si512(low, broadcast(bias)), broadcast(255));
 }
 
-// Bits 0..4 indicate a pending alternative at the root or one of the four Y depths.
+// Bits 0..4 indicate a pending alternative at the Y3 root or one of Y4..Y7.
 // Resume the deepest alternative before fetching the lane's next stride-16 root guess.
 struct SearchState
 {
     __m512i next             = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
     __m512i pending          = _mm512_setzero_si512();
-    __m512i root             = _mm512_setzero_si512();
+    __m512i root             = _mm512_setzero_si512(); // Y3 for the current root
     __m512i rootAlternative  = _mm512_setzero_si512();
     __m512i packed           = _mm512_setzero_si512();
     __m512i alternativeBytes = _mm512_setzero_si512();
-    __m512i child6 = _mm512_setzero_si512(), child5 = _mm512_setzero_si512();
-    __m512i child4 = _mm512_setzero_si512(), child3 = _mm512_setzero_si512();
+    __m512i child4 = _mm512_setzero_si512(), child5 = _mm512_setzero_si512();
+    __m512i child6 = _mm512_setzero_si512(), child7 = _mm512_setzero_si512();
 
+    // Depths 1..4 generate Y4..Y7 and the corresponding low X bytes.
     template <int Depth>
     void step(__m512i& current, __m512i& alternative, __mmask16& active, __m512i start, const ZPathContext& context)
     {
         static_assert(Depth >= 1 && Depth <= 4);
-        constexpr auto  shift         = 8 * (4 - Depth);
+        constexpr auto  shift         = 8 * (Depth - 1);
         constexpr auto  bit           = 1u << Depth;
         const __mmask16 fresh         = active & _mm512_cmplt_epu32_mask(start, broadcast(Depth));
         const __mmask16 resume        = active & _mm512_cmpeq_epi32_mask(start, broadcast(Depth));
         const __mmask16 participating = fresh | resume;
-
-        const auto      fy         = _mm512_mullo_epi32(_mm512_sub_epi32(current, broadcast(1)), broadcast(multInv));
-        const auto      difference = _mm512_sub_epi32(_mm512_mullo_epi32(current, broadcast(multInvSquared)),
-                                                      broadcast(multInvSquared + multInv + context.yHigh[4 - Depth]));
-        const auto      fiber      = getArithmeticFiber(difference);
-        const auto      high       = broadcast(context.yHigh[5 - Depth]);
-        const __mmask16 keepFirst =
-            fresh & fiber.keepFirst &
-            _mm512_cmplt_epu32_mask(_mm512_sub_epi32(_mm512_sub_epi32(fy, fiber.first), high), broadcast(1u << 24));
-        const __mmask16 keepSecond =
-            fresh & fiber.keepSecond &
-            _mm512_cmplt_epu32_mask(_mm512_sub_epi32(_mm512_sub_epi32(fy, fiber.second), high), broadcast(1u << 24));
-        const __mmask16 both     = keepFirst & keepSecond;
-        const __mmask16 accepted = keepFirst | keepSecond | resume;
+        const auto      base          = _mm512_add_epi32(_mm512_mullo_epi32(current, broadcast(mult)), broadcast(1));
+        const auto      upper         = broadcast(context.yHigh[Depth + 1] + (yRange - 1));
+        const auto      fiber         = getForwardFiber(_mm512_sub_epi32(upper, base));
+        const __mmask16 keepFirst     = fresh & fiber.keepFirst;
+        const __mmask16 keepSecond    = fresh & fiber.keepSecond;
+        const __mmask16 both          = keepFirst & keepSecond;
+        const __mmask16 accepted      = keepFirst | keepSecond | resume;
         const auto      u =
             _mm512_mask_blend_epi32(resume, _mm512_mask_blend_epi32(keepFirst, fiber.second, fiber.first),
                                     _mm512_and_si512(_mm512_srli_epi32(alternativeBytes, shift), broadcast(255)));
-        const auto child = _mm512_mask_blend_epi32(resume, _mm512_sub_epi32(fy, u), alternative);
-
+        const auto residual = _mm512_mask_blend_epi32(keepFirst, fiber.residualSecond, fiber.residualFirst);
+        const auto child    = _mm512_mask_blend_epi32(resume, _mm512_sub_epi32(upper, residual), alternative);
         pending             = _mm512_mask_blend_epi32(participating, pending,
                                                       _mm512_or_si512(_mm512_andnot_si512(broadcast(bit), pending),
                                                                       _mm512_maskz_mov_epi32(both, broadcast(bit))));
-        alternative         = _mm512_mask_blend_epi32(both, alternative, _mm512_sub_epi32(fy, fiber.second));
+        alternative         = _mm512_mask_blend_epi32(both, alternative, _mm512_sub_epi32(upper, fiber.residualSecond));
         const auto byteMask = broadcast(255u << shift);
         alternativeBytes    = _mm512_mask_blend_epi32(
             both, alternativeBytes,
@@ -165,9 +214,10 @@ struct SearchState
 
 void Attack::exploreYlistsAvx512(const ZPathContext& context)
 {
-    auto       state     = SearchState{};
-    const auto rootHigh  = broadcast(context.yHigh[5]);
-    const auto rootBound = broadcast(fiberWidth + context.yHigh[4]);
+    auto state = SearchState{};
+    // Enumerate Y3 roots consistent with the known Y2 high byte.
+    const auto rootHigh  = broadcast(context.yHigh[1]);
+    const auto rootBound = broadcast(fiberWidth + context.yHigh[0]);
     while (true)
     {
         const auto      pending = _mm512_test_epi32_mask(state.pending, state.pending);
@@ -182,7 +232,7 @@ void Attack::exploreYlistsAvx512(const ZPathContext& context)
         const __mmask16 rootWork   = fetch | resumeRoot;
         const auto      base       = _mm512_or_si512(rootHigh, _mm512_slli_epi32(state.next, 8));
         state.next                 = _mm512_mask_add_epi32(state.next, fetch, state.next, broadcast(16));
-        const auto fiber           = getArithmeticFiber(
+        const auto fiber           = getRootFiber(
             _mm512_sub_epi32(rootBound, _mm512_mullo_epi32(_mm512_sub_epi32(base, broadcast(1)), broadcast(multInv))));
         const __mmask16 keepFirst  = fetch & fiber.keepFirst;
         const __mmask16 keepSecond = fetch & fiber.keepSecond;
@@ -198,23 +248,23 @@ void Attack::exploreYlistsAvx512(const ZPathContext& context)
         active        = (active & ~rootWork) | accepted;
 
         auto current = state.root;
-        state.step<1>(current, state.child6, active, start, context);
+        state.step<1>(current, state.child4, active, start, context);
         state.step<2>(current, state.child5, active, start, context);
-        state.step<3>(current, state.child4, active, start, context);
-        state.step<4>(current, state.child3, active, start, context);
+        state.step<3>(current, state.child6, active, start, context);
+        state.step<4>(current, state.child7, active, start, context);
 
-        const auto x3        = projectX3(state.packed, context.x3PlaintextBias);
-        const auto bound     = _mm512_sub_epi32(_mm512_sub_epi32(_mm512_mullo_epi32(current, broadcast(multInvSquared)),
-                                                                 _mm512_mullo_epi32(x3, broadcast(multInv))),
-                                                broadcast(multInvSquared + multInv + context.y1Constraint));
+        const auto x3    = projectX3(state.packed, context.x3PlaintextBias);
+        const auto bound = _mm512_sub_epi32(_mm512_sub_epi32(_mm512_mullo_epi32(state.root, broadcast(multInvSquared)),
+                                                             _mm512_mullo_epi32(x3, broadcast(multInv))),
+                                            broadcast(multInvSquared + multInv + context.y1Constraint));
         auto       survivors = static_cast<__mmask16>(active & _mm512_cmple_epu32_mask(bound, broadcast(maxdiff<26>)));
         if (survivors)
         {
             alignas(64) auto y3      = std::array<std::uint32_t, 16>{};
             alignas(64) auto y7      = std::array<std::uint32_t, 16>{};
             alignas(64) auto packedX = std::array<std::uint32_t, 16>{};
-            _mm512_store_si512(y3.data(), current);
-            _mm512_store_si512(y7.data(), state.root);
+            _mm512_store_si512(y3.data(), state.root);
+            _mm512_store_si512(y7.data(), current);
             _mm512_store_si512(packedX.data(), state.packed);
             do
             {

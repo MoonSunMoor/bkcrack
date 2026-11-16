@@ -191,7 +191,7 @@ TEST("incorrect extra plaintext rejects a completed candidate")
 TEST("generated inputs with short and shifted attack windows")
 {
     for (const auto seed : {20261115u, 938421u})
-        for (const auto length : {8u, 64u})
+        for (const auto length : {8u, 12u, 64u})
             for (const auto offset : {0, 3})
             {
                 auto       rng = std::mt19937{seed};
@@ -199,7 +199,7 @@ TEST("generated inputs with short and shifted attack windows")
                     std::array<std::uint32_t, 3>{static_cast<std::uint32_t>(rng()), static_cast<std::uint32_t>(rng()),
                                                  static_cast<std::uint32_t>(rng())};
                 auto       keys       = Keys{initial[0], initial[1], initial[2]};
-                const auto windowEnd  = length == 8 ? 7u : 19u;
+                const auto windowEnd  = length == 64 ? 19u : 7u;
                 const auto plainStart = 12 + offset;
                 auto       plain      = std::vector<std::uint8_t>(plainStart + length + 20);
                 auto       cipher     = std::vector<std::uint8_t>(plain.size());
