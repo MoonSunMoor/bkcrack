@@ -45,6 +45,9 @@ private:
     // iterate recursively over Y-lists without changing the path constraints
     void exploreYlists(int i, const ZPathContext& context);
 
+    // explore the complete Y path with sixteen independent lanes
+    void exploreYlistsAvx512(const ZPathContext& context);
+
     // filter candidate X low bytes using the Y1 constraint
     void testXlist(const ZPathContext& context);
 
@@ -56,6 +59,8 @@ private:
     const std::size_t index; // starting index of the used plaintext and keystream
 
     const std::uint8_t x3PlaintextBias; // low X3 projection with zero candidate bytes
+
+    const bool useAvx512; // selected once for this worker before entering any ISA-specific code
 
     std::vector<Keys>& solutions; // shared output vector of valid keys
     std::mutex&        solutionsMutex;

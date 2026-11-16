@@ -11,6 +11,16 @@
 
 namespace
 {
+auto isAvx512Supported() -> bool
+{
+#ifdef BKCRACK_HAS_AVX512
+    return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
+           __builtin_cpu_supports("avx512cd") && __builtin_cpu_supports("gfni");
+#else
+    return false;
+#endif
+}
+
 auto getX3PlaintextBias(const Data& data, std::size_t index) -> std::uint8_t
 {
     auto x = std::uint32_t{};
@@ -27,6 +37,7 @@ Attack::Attack(const Data& data, std::size_t index, std::vector<Keys>& solutions
 : data{data}
 , index{index + 1 - Attack::contiguousSize}
 , x3PlaintextBias{getX3PlaintextBias(data, this->index)}
+, useAvx512{isAvx512Supported()}
 , solutions{solutions}
 , solutionsMutex{solutionsMutex}
 , exhaustive{exhaustive}
@@ -67,6 +78,13 @@ void Attack::exploreZlists(int i)
     else // the Z-list is complete so iterate over possible Y values
     {
         const auto context = makeZPathContext();
+#ifdef BKCRACK_HAS_AVX512
+        if (useAvx512)
+        {
+            exploreYlistsAvx512(context);
+            return;
+        }
+#endif
 
         // guess Y7[8,24) and keep prod == (Y7[8,32) - 1) * mult^-1
         for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(context.yHigh[5]) << 24) - MultTab::multInv;
