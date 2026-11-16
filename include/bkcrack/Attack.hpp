@@ -38,7 +38,7 @@ private:
     // iterate recursively over Z-lists
     void exploreZlists(int i);
 
-    // iterate recursively over Y-lists
+    // explore Y3 to Y7 using the known high bytes
     void exploreYlists(int i);
 
     // filter candidate X low bytes using the Y1 constraint
@@ -58,9 +58,9 @@ private:
     const bool         exhaustive;
     Progress&          progress;
 
-    std::array<std::uint32_t, contiguousSize> zlist;
-    std::array<std::uint32_t, contiguousSize> ylist; // the first two elements are not used
-    std::array<std::uint32_t, contiguousSize> xlist; // the first four elements are not used
+    std::array<std::uint32_t, contiguousSize> zlist{};
+    std::array<std::uint32_t, contiguousSize> ylist{}; // the first two elements are not used
+    std::array<std::uint32_t, contiguousSize> xlist{}; // the first four elements are not used
 
     std::uint32_t y1Constraint{}; // known Y1[26,32) for the current Z-list
 };

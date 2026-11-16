@@ -69,16 +69,17 @@ void Attack::exploreZlists(int i)
         // This constraint is shared by every Y candidate for the completed Z-list.
         y1Constraint = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
 
-        // guess Y7[8,24) and keep prod == (Y7[8,32) - 1) * mult^-1
-        for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(ylist[7]) << 24) - MultTab::multInv;
-             y7_8_24 < 1 << 24; y7_8_24 += 1 << 8, prod += MultTab::multInv << 8)
+        // Guess Y3[8,24) and use the Y2 bound to enumerate exact Y3 low bytes.
+        const auto y3High = ylist[3] & mask<24, 32>;
+        const auto bound  = maxdiff<24> + (ylist[2] & mask<24, 32>);
+        for (auto middle = std::uint32_t{}, prod = MultTab::multInv * y3High - MultTab::multInv; middle < 1u << 24;
+             middle += 1u << 8, prod += MultTab::multInv << 8)
         {
-            // Reflect the Y6 bound to get exactly the possible Y7[0,8) values.
-            const auto& fiber = MultTab::getExactProdFiber(maxdiff<24> + (ylist[6] & mask<24, 32>)-prod);
-            for (const auto y7_0_8 : fiber)
+            const auto& fiber = MultTab::getExactProdFiber(bound - prod);
+            for (const auto low : fiber)
             {
-                ylist[7] = y7_0_8 | y7_8_24 | (ylist[7] & mask<24, 32>);
-                exploreYlists(7);
+                ylist[3] = y3High | middle | low;
+                exploreYlists(3);
             }
         }
     }
@@ -86,28 +87,25 @@ void Attack::exploreZlists(int i)
 
 void Attack::exploreYlists(int i)
 {
-    if (i != 3) // the Y-list is not complete so generate Y{i-1} values
+    if (i != 7)
     {
-        const auto fy  = (ylist[i] - 1) * MultTab::multInv;
-        const auto ffy = (fy - 1) * MultTab::multInv;
-
-        // get exactly the possible LSB(Xi) values satisfying the Y{i-2} bound
-        const auto& fiber = MultTab::getExactProdFiber(ffy - (ylist[i - 2] & mask<24, 32>));
-        for (const auto xi_0_8 : fiber)
+        const auto base  = MultTab::mult * ylist[i] + 1;
+        const auto upper = (ylist[i + 1] & mask<24, 32>)+mask<0, 24>;
+        const auto fiber = MultTab::getForwardFiber(upper - base);
+        if (fiber.keepFirst)
         {
-            // compute corresponding Y{i-1}
-            const auto yim1 = fy - xi_0_8;
-
-            // filter values with Y{i-1}[24,32)
-            if (msb(yim1) == msb(ylist[i - 1]))
-            {
-                ylist[i - 1] = yim1;
-                xlist[i]     = xi_0_8;
-                exploreYlists(i - 1);
-            }
+            xlist[i + 1] = fiber.first;
+            ylist[i + 1] = upper - fiber.residualFirst;
+            exploreYlists(i + 1);
+        }
+        if (fiber.keepSecond)
+        {
+            xlist[i + 1] = fiber.second;
+            ylist[i + 1] = upper - fiber.residualSecond;
+            exploreYlists(i + 1);
         }
     }
-    else // the Y-list is complete so check if the corresponding X-list is valid
+    else
         testXlist();
 }
 
