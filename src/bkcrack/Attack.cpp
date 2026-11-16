@@ -11,44 +11,6 @@
 
 namespace
 {
-constexpr auto forwardRange     = 1u << 24;
-constexpr auto forwardCellWidth = 1u << 27;
-constexpr auto forwardGridStep  = 32 * MultTab::mult;
-
-static_assert(32ull * MultTab::mult == (1ull << 32) + forwardGridStep);
-static_assert(255ull * (MultTab::mult - forwardCellWidth) + forwardRange - 1 < 2ull * forwardCellWidth);
-static_assert(forwardCellWidth - 31 * (MultTab::mult - forwardCellWidth) > 6 * forwardGridStep);
-static_assert(forwardCellWidth < 8 * forwardGridStep);
-
-struct ForwardFiber
-{
-    std::uint32_t first, second;
-    std::uint32_t residualFirst, residualSecond;
-    bool          keepFirst, keepSecond;
-};
-
-// Find the bytes u satisfying uint32(difference - mult * u) < 2^24.
-auto getForwardFiber(std::uint32_t difference) -> ForwardFiber
-{
-    const auto cell          = difference >> 27;
-    const auto offset        = difference - MultTab::mult * cell;
-    const auto quotient      = offset / forwardGridStep;
-    const auto first         = cell + (quotient << 5);
-    const auto residualFirst = offset - quotient * forwardGridStep;
-
-    // Only the neighboring residue, with quotient 6 or 7, can yield another byte.
-    const auto secondOffset   = offset + MultTab::mult - (cell == 0 ? forwardGridStep : 0u);
-    const auto secondQuotient = 6u + std::uint32_t{secondOffset >= 7 * forwardGridStep};
-    const auto second         = ((cell - 1) & 31) + (secondQuotient << 5);
-    const auto residualSecond = secondOffset - secondQuotient * forwardGridStep;
-    return {first,
-            second,
-            residualFirst,
-            residualSecond,
-            offset < forwardCellWidth && residualFirst < forwardRange,
-            residualSecond < forwardRange};
-}
-
 auto getX3PlaintextBias(const Data& data, std::size_t index) -> std::uint8_t
 {
     auto x = std::uint32_t{};
@@ -128,8 +90,8 @@ void Attack::exploreYlists(int i)
     if (i != 7)
     {
         const auto base  = MultTab::mult * ylist[i] + 1;
-        const auto upper = (ylist[i + 1] & mask<24, 32>)+(forwardRange - 1);
-        const auto fiber = getForwardFiber(upper - base);
+        const auto upper = (ylist[i + 1] & mask<24, 32>)+mask<0, 24>;
+        const auto fiber = MultTab::getForwardFiber(upper - base);
         if (fiber.keepFirst)
         {
             xlist[i + 1] = fiber.first;
