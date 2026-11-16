@@ -11,7 +11,7 @@
 
 /// \file Attack.hpp
 
-/// Class to carry out the attack for a given Z[2,32) value
+/// Scalar worker and shared Z traversal and verification for the attack
 class Attack
 {
 public:
@@ -36,17 +36,20 @@ public:
     static constexpr std::size_t attackSize = 12;
 
 private:
-    // iterate recursively over Z-lists
+    friend class AttackAvx512;
+
+    // iterate recursively over Z-lists with a compile-time Y search choice
+    template <class Worker>
     void exploreZlists(int i);
 
     // snapshot the valid constraints after completing a Z-list
     auto makeZPathContext() const -> ZPathContext;
 
+    // enumerate scalar Y roots for a completed Z path
+    void exploreYlists(const ZPathContext& context);
+
     // iterate recursively over Y-lists without changing the path constraints
     void exploreYlists(int i, const ZPathContext& context);
-
-    // explore Y3 to Y7 with sixteen independent lanes
-    void exploreYlistsAvx512(const ZPathContext& context);
 
     // filter candidate X low bytes using the Y1 constraint
     void testXlist(const ZPathContext& context);
@@ -59,8 +62,6 @@ private:
     const std::size_t index; // starting index of the used plaintext and keystream
 
     const std::uint8_t x3PlaintextBias; // low X3 projection with zero candidate bytes
-
-    const bool useAvx512; // selected once for this worker before entering any ISA-specific code
 
     std::vector<Keys>& solutions; // shared output vector of valid keys
     std::mutex&        solutionsMutex;

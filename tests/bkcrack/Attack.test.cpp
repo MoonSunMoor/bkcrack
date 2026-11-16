@@ -216,13 +216,26 @@ TEST("generated inputs with short and shifted attack windows")
                 if (length == 8)
                     for (const auto i : {10, 12, 14, 16})
                         extra[offset + i] = plain[plainStart + i];
-                const auto data       = Data{std::move(cipher),
-                                             {},
-                                             {plain.begin() + plainStart, plain.begin() + plainStart + length},
+                const auto data            = Data{std::move(cipher),
+                                                  {},
+                                                  {plain.begin() + plainStart, plain.begin() + plainStart + length},
                                        offset,
                                        extra};
-                const auto candidates = std::vector<std::uint32_t>{0, z & mask<2, 32>, 0x10000000, 0x20000000};
-                for (const auto jobs : {1, 4})
+                const auto candidates      = std::vector<std::uint32_t>{0, z & mask<2, 32>, 0x10000000, 0x20000000};
+                auto       scalarSolutions = std::vector<Keys>{};
+                auto       scalarMutex     = std::mutex{};
+                auto       scalarLog       = std::ostringstream{};
+                auto       scalarProgress  = Progress{scalarLog};
+                auto       scalarWorker = Attack{data, windowEnd, scalarSolutions, scalarMutex, true, scalarProgress};
+                for (const auto candidate : candidates)
+                    scalarWorker.carryout(candidate);
+                CHECK(scalarSolutions.size() == 1);
+                CHECK(scalarSolutions[0].getX() == initial[0]);
+                CHECK(scalarSolutions[0].getY() == initial[1]);
+                CHECK(scalarSolutions[0].getZ() == initial[2]);
+                CHECK(scalarProgress.state == Progress::State::Normal);
+
+                for (const auto jobs : {1, 2, 4, 8})
                 {
                     auto       start    = 0;
                     auto       os       = std::ostringstream{};

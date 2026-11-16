@@ -1,4 +1,4 @@
-#include "bkcrack/Attack.hpp"
+#include "AttackAvx512.hpp"
 
 #include <bkcrack/MultTab.hpp>
 
@@ -216,7 +216,7 @@ struct SearchState
 #ifdef _MSC_VER
 __declspec(noinline)
 #endif
-    void Attack::exploreYlistsAvx512(const ZPathContext& context)
+    void AttackAvx512::exploreYlists(const ZPathContext& context)
 {
     auto state = SearchState{};
     // Enumerate Y3 roots consistent with the known Y2 high byte.

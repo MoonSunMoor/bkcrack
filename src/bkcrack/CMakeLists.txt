@@ -70,7 +70,7 @@ if(BKCRACK_ENABLE_AVX512 AND CMAKE_SIZEOF_VOID_P EQUAL 8
             }]] BKCRACK_CAN_BUILD_AVX512)
         cmake_pop_check_state()
         if(BKCRACK_CAN_DETECT_AVX512 AND BKCRACK_CAN_BUILD_AVX512)
-            target_sources(bkcrack-core PRIVATE AttackAvx512.cpp)
+            target_sources(bkcrack-core PRIVATE AttackAvx512.cpp AttackAvx512.hpp)
             set_source_files_properties(AttackAvx512.cpp PROPERTIES
                 COMPILE_OPTIONS "${BKCRACK_AVX512_OPTIONS}")
             target_compile_definitions(bkcrack-core PRIVATE BKCRACK_HAS_AVX512)

@@ -2,58 +2,14 @@
 
 #include <bkcrack/Crc32Tab.hpp>
 #include <bkcrack/KeystreamTab.hpp>
-#include <bkcrack/MultTab.hpp>
 #include <bkcrack/log.hpp>
 
-#include <algorithm>
-#include <atomic>
-#include <thread>
-
-#if defined(BKCRACK_HAS_AVX512) && defined(_MSC_VER)
-#include <intrin.h>
+#ifdef BKCRACK_HAS_AVX512
+#include "AttackAvx512.hpp"
 #endif
 
 namespace
 {
-auto isAvx512Supported() -> bool
-{
-#if defined(BKCRACK_HAS_AVX512) && defined(_MSC_VER)
-    auto cpu = std::array<int, 4>{};
-    __cpuidex(cpu.data(), 0, 0);
-    if (cpu[0] < 7)
-        return false;
-
-    __cpuidex(cpu.data(), 1, 0);
-    // Require FMA, POPCNT, XSAVE, OSXSAVE and AVX before reading XCR0.
-    constexpr auto avx = (1u << 12) | (1u << 23) | (1u << 26) | (1u << 27) | (1u << 28);
-    if ((static_cast<unsigned>(cpu[2]) & avx) != avx)
-        return false;
-
-    // XMM, YMM, opmask and both ZMM register components must be saved by the OS.
-    if ((_xgetbv(0) & 0xe6) != 0xe6)
-        return false;
-
-    __cpuidex(cpu.data(), 7, 0);
-    // MSVC also enables BMI1, AVX2, BMI2, AVX512DQ and AVX512VL for this file.
-    constexpr auto avx512 =
-        (1u << 3) | (1u << 5) | (1u << 8) | (1u << 16) | (1u << 17) | (1u << 28) | (1u << 30) | (1u << 31);
-    if ((static_cast<unsigned>(cpu[1]) & avx512) != avx512 || (cpu[2] & (1 << 8)) == 0) // GFNI
-        return false;
-
-    // LZCNT can also be emitted by the compiler under /arch:AVX512.
-    __cpuidex(cpu.data(), static_cast<int>(0x80000000u), 0);
-    if (static_cast<unsigned>(cpu[0]) < 0x80000001u)
-        return false;
-    __cpuidex(cpu.data(), static_cast<int>(0x80000001u), 0);
-    return (cpu[2] & (1 << 5)) != 0;
-#elif defined(BKCRACK_HAS_AVX512)
-    return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
-           __builtin_cpu_supports("avx512cd") && __builtin_cpu_supports("gfni");
-#else
-    return false;
-#endif
-}
-
 auto getX3PlaintextBias(const Data& data, std::size_t index) -> std::uint8_t
 {
     auto x = std::uint32_t{};
@@ -70,7 +26,6 @@ Attack::Attack(const Data& data, std::size_t index, std::vector<Keys>& solutions
 : data{data}
 , index{index + 1 - Attack::contiguousSize}
 , x3PlaintextBias{getX3PlaintextBias(data, this->index)}
-, useAvx512{isAvx512Supported()}
 , solutions{solutions}
 , solutionsMutex{solutionsMutex}
 , exhaustive{exhaustive}
@@ -81,9 +36,18 @@ Attack::Attack(const Data& data, std::size_t index, std::vector<Keys>& solutions
 void Attack::carryout(std::uint32_t z7_2_32)
 {
     zlist[7] = z7_2_32;
-    exploreZlists(7);
+    exploreZlists<Attack>(7);
 }
 
+#ifdef BKCRACK_HAS_AVX512
+void AttackAvx512::carryout(std::uint32_t z7_2_32)
+{
+    zlist[7] = z7_2_32;
+    exploreZlists<AttackAvx512>(7);
+}
+#endif
+
+template <class Worker>
 void Attack::exploreZlists(int i)
 {
     if (i != 0) // the Z-list is not complete so generate Z{i-1}[2,32) values
@@ -105,32 +69,13 @@ void Attack::exploreZlists(int i)
             if (i < 7)
                 ylist[i + 1] = Crc32Tab::getYi_24_32(zlist[i + 1], zlist[i]);
 
-            exploreZlists(i - 1);
+            exploreZlists<Worker>(i - 1);
         }
     }
     else // the Z-list is complete so iterate over possible Y values
     {
         const auto context = makeZPathContext();
-#ifdef BKCRACK_HAS_AVX512
-        if (useAvx512)
-        {
-            exploreYlistsAvx512(context);
-            return;
-        }
-#endif
-
-        // guess Y7[8,24) and keep prod == (Y7[8,32) - 1) * mult^-1
-        for (auto y7_8_24 = std::uint32_t{}, prod = (MultTab::multInv * msb(context.yHigh[5]) << 24) - MultTab::multInv;
-             y7_8_24 < 1 << 24; y7_8_24 += 1 << 8, prod += MultTab::multInv << 8)
-        {
-            // Reflect the Y6 bound to get exactly the possible Y7[0,8) values.
-            const auto& fiber = MultTab::getExactProdFiber(maxdiff<24> + context.yHigh[4] - prod);
-            for (const auto y7_0_8 : fiber)
-            {
-                ylist[7] = y7_0_8 | y7_8_24 | context.yHigh[5];
-                exploreYlists(7, context);
-            }
-        }
+        static_cast<Worker&>(*this).exploreYlists(context);
     }
 }
 
@@ -147,46 +92,6 @@ auto Attack::makeZPathContext() const -> ZPathContext
     if (index + contiguousSize < data.keystream.size())
         context.nextKeystream = data.keystream[index + contiguousSize];
     return context;
-}
-
-void Attack::exploreYlists(int i, const ZPathContext& context)
-{
-    if (i != 3) // the Y-list is not complete so generate Y{i-1} values
-    {
-        const auto fy  = (ylist[i] - 1) * MultTab::multInv;
-        const auto ffy = (fy - 1) * MultTab::multInv;
-
-        // get exactly the possible LSB(Xi) values satisfying the Y{i-2} bound
-        const auto& fiber = MultTab::getExactProdFiber(ffy - context.yHigh[i - 4]);
-        for (const auto xi_0_8 : fiber)
-        {
-            // compute corresponding Y{i-1}
-            const auto yim1 = fy - xi_0_8;
-
-            // filter values with Y{i-1}[24,32)
-            if (msb(yim1) == msb(context.yHigh[i - 3]))
-            {
-                ylist[i - 1] = yim1;
-                xlist[i]     = xi_0_8;
-                exploreYlists(i - 1, context);
-            }
-        }
-    }
-    else // the Y-list is complete so check if the corresponding X-list is valid
-        testXlist(context);
-}
-
-void Attack::testXlist(const ZPathContext& context)
-{
-    // Reject candidates using only low X3 before reconstructing the full X states.
-    const auto x3_0_8 =
-        Crc32Tab::getXim4_0_8(lsb(xlist[4]), lsb(xlist[5]), lsb(xlist[6]), lsb(xlist[7]), context.x3PlaintextBias);
-    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - context.y1Constraint > maxdiff<26>)
-        return;
-
-    const auto packedX = std::uint32_t{lsb(xlist[4])} | (std::uint32_t{lsb(xlist[5])} << 8) |
-                         (std::uint32_t{lsb(xlist[6])} << 16) | (std::uint32_t{lsb(xlist[7])} << 24);
-    verifyXlist(context, AttackCandidate{ylist[3], ylist[7], packedX});
 }
 
 void Attack::verifyXlist(const ZPathContext& context, const AttackCandidate& candidate)
@@ -265,41 +170,4 @@ void Attack::verifyXlist(const ZPathContext& context, const AttackCandidate& can
 
     if (!exhaustive)
         progress.state = Progress::State::EarlyExit;
-}
-
-auto attack(const Data& data, const std::vector<std::uint32_t>& zi_2_32_vector, int& start, std::size_t index, int jobs,
-            const bool exhaustive, Progress& progress) -> std::vector<Keys>
-{
-    const auto* candidates = zi_2_32_vector.data();
-    const auto  size       = static_cast<int>(zi_2_32_vector.size());
-
-    auto solutions      = std::vector<Keys>{};
-    auto solutionsMutex = std::mutex{};
-    auto worker         = Attack{data, index, solutions, solutionsMutex, exhaustive, progress};
-
-    progress.done  = start;
-    progress.total = size;
-
-    const auto threadCount        = std::clamp(jobs, 1, size);
-    auto       threads            = std::vector<std::thread>{};
-    auto       nextCandidateIndex = std::atomic<int>{start};
-    for (auto i = 0; i < threadCount; ++i)
-        threads.emplace_back(
-            [&nextCandidateIndex, size, &progress, candidates, worker]() mutable
-            {
-                for (auto i = nextCandidateIndex++; i < size; i = nextCandidateIndex++)
-                {
-                    worker.carryout(candidates[i]);
-                    progress.done++;
-
-                    if (progress.state != Progress::State::Normal)
-                        break;
-                }
-            });
-    for (auto& thread : threads)
-        thread.join();
-
-    start = std::min(nextCandidateIndex.load(), size);
-
-    return solutions;
 }
