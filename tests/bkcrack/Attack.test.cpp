@@ -2,6 +2,7 @@
 
 #include <TestRunner.hpp>
 
+#include <random>
 #include <sstream>
 
 namespace
@@ -144,4 +145,97 @@ TEST("two-worker exhaustive attack")
     CHECK(progress.done == 16);
     CHECK(progress.total == 16);
     CHECK(progress.state == Progress::State::Normal);
+}
+
+TEST("reuse worker across completed Z paths")
+{
+    const auto data      = Data{ciphertext, {}, plaintext, 0, {}};
+    auto       solutions = std::vector<Keys>{};
+    auto       mutex     = std::mutex{};
+    auto       os        = std::ostringstream{};
+    auto       progress  = Progress{os};
+    auto       worker    = Attack{data, 7, solutions, mutex, true, progress};
+
+    worker.carryout(z7 & mask<2, 32>);
+    CHECK(solutions.size() == 1);
+    worker.carryout(0);
+    CHECK(solutions.size() == 1);
+    worker.carryout(z7 & mask<2, 32>);
+    CHECK(solutions.size() == 2);
+    for (const auto& keys : solutions)
+    {
+        CHECK(keys.getX() == 0xea9b4e4d);
+        CHECK(keys.getY() == 0xba789085);
+        CHECK(keys.getZ() == 0x5ff8707d);
+    }
+    CHECK(progress.state == Progress::State::Normal);
+}
+
+TEST("incorrect extra plaintext rejects a completed candidate")
+{
+    const auto plaintext2 = std::vector<std::uint8_t>{plaintext.begin() + 2, plaintext.end() - 2};
+    const auto extra    = std::map<int, std::uint8_t>{{-2, (0x65 ^ 0x7d) ^ 1}, {-1, 0x81 ^ 0x0d}, {0, 'H'}, {11, '!'}};
+    const auto data     = Data{ciphertext, {}, plaintext2, 2, extra};
+    auto       start    = 0;
+    auto       os       = std::ostringstream{};
+    auto       progress = Progress{os};
+
+    const auto result = attack(data, z9_2_32, start, 7, 2, true, progress);
+    CHECK(result.empty());
+    CHECK(start == 16);
+    CHECK(progress.done == 16);
+    CHECK(progress.total == 16);
+    CHECK(progress.state == Progress::State::Normal);
+}
+
+TEST("generated inputs with short and shifted attack windows")
+{
+    for (const auto seed : {20261115u, 938421u})
+        for (const auto length : {8u, 12u, 64u})
+            for (const auto offset : {0, 3})
+            {
+                auto       rng = std::mt19937{seed};
+                const auto initial =
+                    std::array<std::uint32_t, 3>{static_cast<std::uint32_t>(rng()), static_cast<std::uint32_t>(rng()),
+                                                 static_cast<std::uint32_t>(rng())};
+                auto       keys       = Keys{initial[0], initial[1], initial[2]};
+                const auto windowEnd  = length == 64 ? 19u : 7u;
+                const auto plainStart = 12 + offset;
+                auto       plain      = std::vector<std::uint8_t>(plainStart + length + 20);
+                auto       cipher     = std::vector<std::uint8_t>(plain.size());
+                auto       z          = std::uint32_t{};
+                for (auto i = std::size_t{}; i < plain.size(); ++i)
+                {
+                    if (i == plainStart + windowEnd)
+                        z = keys.getZ();
+                    plain[i]  = static_cast<std::uint8_t>(rng());
+                    cipher[i] = plain[i] ^ keys.getK();
+                    keys.update(plain[i]);
+                }
+                auto extra = std::map<int, std::uint8_t>{};
+                if (length == 8)
+                    for (const auto i : {10, 12, 14, 16})
+                        extra[offset + i] = plain[plainStart + i];
+                const auto data       = Data{std::move(cipher),
+                                             {},
+                                             {plain.begin() + plainStart, plain.begin() + plainStart + length},
+                                       offset,
+                                       extra};
+                const auto candidates = std::vector<std::uint32_t>{0, z & mask<2, 32>, 0x10000000, 0x20000000};
+                for (const auto jobs : {1, 2, 4, 8})
+                {
+                    auto       start    = 0;
+                    auto       os       = std::ostringstream{};
+                    auto       progress = Progress{os};
+                    const auto result   = attack(data, candidates, start, windowEnd, jobs, true, progress);
+                    CHECK(result.size() == 1);
+                    CHECK(result[0].getX() == initial[0]);
+                    CHECK(result[0].getY() == initial[1]);
+                    CHECK(result[0].getZ() == initial[2]);
+                    CHECK(start == 4);
+                    CHECK(progress.done == 4);
+                    CHECK(progress.total == 4);
+                    CHECK(progress.state == Progress::State::Normal);
+                }
+            }
 }
