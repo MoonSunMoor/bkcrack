@@ -29,29 +29,52 @@ target_link_libraries(bkcrack-core PRIVATE Threads::Threads)
 
 # Keep ISA-specific instructions out of the dispatcher and the portable scalar build.
 option(BKCRACK_ENABLE_AVX512 "Build the AVX512 attack kernel when supported by the compiler." ON)
-if(BKCRACK_ENABLE_AVX512 AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$"
+if(BKCRACK_ENABLE_AVX512 AND CMAKE_SIZEOF_VOID_P EQUAL 8
     AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    include(CheckCXXSourceCompiles)
-    include(CMakePushCheckState)
-    cmake_push_check_state(RESET)
-    set(CMAKE_REQUIRED_FLAGS "-mavx512f -mavx512bw -mavx512cd -mgfni")
-    check_cxx_source_compiles([[
-        #include <immintrin.h>
-        int main() {
-            auto x = _mm512_set1_epi32(__builtin_cpu_supports("avx512f") &&
-                __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512cd") &&
-                __builtin_cpu_supports("gfni"));
-            x = _mm512_lzcnt_epi32(x);
-            x = _mm512_mulhi_epu16(x, x);
-            x = _mm512_gf2p8affine_epi64_epi8(x, x, 0);
-            return _mm512_cmpeq_epi32_mask(x, x) == 0;
-        }]] BKCRACK_CAN_BUILD_AVX512)
-    cmake_pop_check_state()
-    if(BKCRACK_CAN_BUILD_AVX512)
-        target_sources(bkcrack-core PRIVATE AttackAvx512.cpp)
-        set_source_files_properties(AttackAvx512.cpp PROPERTIES
-            COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512cd;-mgfni")
-        target_compile_definitions(bkcrack-core PRIVATE BKCRACK_HAS_AVX512)
-        message(STATUS "AVX512 attack kernel enabled with runtime CPU detection")
+    if(MSVC)
+        set(BKCRACK_AVX512_OPTIONS /arch:AVX512)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            list(APPEND BKCRACK_AVX512_OPTIONS /clang:-mgfni)
+        endif()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+        set(BKCRACK_AVX512_OPTIONS -mavx512f -mavx512bw -mavx512cd -mgfni)
+    endif()
+    if(BKCRACK_AVX512_OPTIONS)
+        include(CheckCXXSourceCompiles)
+        include(CMakePushCheckState)
+        cmake_push_check_state(RESET)
+        # The dispatcher must compile without the kernel's ISA options.
+        check_cxx_source_compiles([[
+            #ifdef _MSC_VER
+            #include <intrin.h>
+            int main() {
+                int cpu[4];
+                __cpuidex(cpu, 0, 0);
+                return cpu[0] ^ static_cast<int>(_xgetbv(0));
+            }
+            #else
+            int main() {
+                return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
+                    __builtin_cpu_supports("avx512cd") && __builtin_cpu_supports("gfni");
+            }
+            #endif]] BKCRACK_CAN_DETECT_AVX512)
+        string(JOIN " " CMAKE_REQUIRED_FLAGS ${BKCRACK_AVX512_OPTIONS})
+        check_cxx_source_compiles([[
+            #include <immintrin.h>
+            int main() {
+                auto x = _mm512_set1_epi32(1);
+                x = _mm512_lzcnt_epi32(x);
+                x = _mm512_mulhi_epu16(x, x);
+                x = _mm512_gf2p8affine_epi64_epi8(x, x, 0);
+                return _mm512_cmpeq_epi32_mask(x, x) == 0;
+            }]] BKCRACK_CAN_BUILD_AVX512)
+        cmake_pop_check_state()
+        if(BKCRACK_CAN_DETECT_AVX512 AND BKCRACK_CAN_BUILD_AVX512)
+            target_sources(bkcrack-core PRIVATE AttackAvx512.cpp)
+            set_source_files_properties(AttackAvx512.cpp PROPERTIES
+                COMPILE_OPTIONS "${BKCRACK_AVX512_OPTIONS}")
+            target_compile_definitions(bkcrack-core PRIVATE BKCRACK_HAS_AVX512)
+            message(STATUS "AVX512 attack kernel enabled with runtime CPU detection")
+        endif()
     endif()
 endif()
