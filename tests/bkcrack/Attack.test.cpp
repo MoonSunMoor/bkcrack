@@ -222,18 +222,18 @@ TEST("generated inputs with short and shifted attack windows")
                                        offset,
                                        extra};
                 const auto candidates      = std::vector<std::uint32_t>{0, z & mask<2, 32>, 0x10000000, 0x20000000};
-                auto       scalarSolutions = std::vector<Keys>{};
-                auto       scalarMutex     = std::mutex{};
-                auto       scalarLog       = std::ostringstream{};
-                auto       scalarProgress  = Progress{scalarLog};
-                auto       scalarWorker = Attack{data, windowEnd, scalarSolutions, scalarMutex, true, scalarProgress};
+                auto       workerSolutions = std::vector<Keys>{};
+                auto       workerMutex     = std::mutex{};
+                auto       workerLog       = std::ostringstream{};
+                auto       workerProgress  = Progress{workerLog};
+                auto       worker = Attack{data, windowEnd, workerSolutions, workerMutex, true, workerProgress};
                 for (const auto candidate : candidates)
-                    scalarWorker.carryout(candidate);
-                CHECK(scalarSolutions.size() == 1);
-                CHECK(scalarSolutions[0].getX() == initial[0]);
-                CHECK(scalarSolutions[0].getY() == initial[1]);
-                CHECK(scalarSolutions[0].getZ() == initial[2]);
-                CHECK(scalarProgress.state == Progress::State::Normal);
+                    worker.carryout(candidate);
+                CHECK(workerSolutions.size() == 1);
+                CHECK(workerSolutions[0].getX() == initial[0]);
+                CHECK(workerSolutions[0].getY() == initial[1]);
+                CHECK(workerSolutions[0].getZ() == initial[2]);
+                CHECK(workerProgress.state == Progress::State::Normal);
 
                 for (const auto jobs : {1, 2, 4, 8})
                 {

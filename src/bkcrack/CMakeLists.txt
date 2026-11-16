@@ -5,7 +5,9 @@ configure_file("${PROJECT_SOURCE_DIR}/include/bkcrack/version.hpp.in" "${VERSION
 # list files
 file(GLOB HEADERS "${PROJECT_SOURCE_DIR}/include/bkcrack/*.hpp")
 file(GLOB SOURCES "*.cpp")
-list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/AttackAvx512.cpp")
+list(REMOVE_ITEM SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/AttackAvx512.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AttackAvx512Kernel.cpp")
 
 # add the library target
 add_library(bkcrack-core)
@@ -70,8 +72,8 @@ if(BKCRACK_ENABLE_AVX512 AND CMAKE_SIZEOF_VOID_P EQUAL 8
             }]] BKCRACK_CAN_BUILD_AVX512)
         cmake_pop_check_state()
         if(BKCRACK_CAN_DETECT_AVX512 AND BKCRACK_CAN_BUILD_AVX512)
-            target_sources(bkcrack-core PRIVATE AttackAvx512.cpp AttackAvx512.hpp)
-            set_source_files_properties(AttackAvx512.cpp PROPERTIES
+            target_sources(bkcrack-core PRIVATE AttackAvx512.cpp AttackAvx512Kernel.cpp AttackAvx512.hpp)
+            set_source_files_properties(AttackAvx512Kernel.cpp PROPERTIES
                 COMPILE_OPTIONS "${BKCRACK_AVX512_OPTIONS}")
             target_compile_definitions(bkcrack-core PRIVATE BKCRACK_HAS_AVX512)
             message(STATUS "AVX512 attack kernel enabled with runtime CPU detection")

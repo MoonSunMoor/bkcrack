@@ -39,14 +39,6 @@ void Attack::carryout(std::uint32_t z7_2_32)
     exploreZlists<Attack>(7);
 }
 
-#ifdef BKCRACK_HAS_AVX512
-void AttackAvx512::carryout(std::uint32_t z7_2_32)
-{
-    zlist[7] = z7_2_32;
-    exploreZlists<AttackAvx512>(7);
-}
-#endif
-
 template <class Worker>
 void Attack::exploreZlists(int i)
 {
@@ -74,43 +66,32 @@ void Attack::exploreZlists(int i)
     }
     else // the Z-list is complete so iterate over possible Y values
     {
-        const auto context = makeZPathContext();
-        static_cast<Worker&>(*this).exploreYlists(context);
+        // This constraint is shared by every Y candidate for the completed Z-list.
+        y1Constraint = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
+
+        static_cast<Worker&>(*this).exploreYlists();
     }
 }
 
-auto Attack::makeZPathContext() const -> ZPathContext
-{
-    auto context            = ZPathContext{};
-    context.index           = index;
-    context.z               = zlist;
-    context.y1Constraint    = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
-    context.x3PlaintextBias = x3PlaintextBias;
-    // Y0/Y1 are not search constraints; copy only the initialized Y2..Y7 high bytes.
-    for (auto i = std::size_t{}; i < context.yHigh.size(); ++i)
-        context.yHigh[i] = ylist[i + 2] & mask<24, 32>;
-    if (index + contiguousSize < data.keystream.size())
-        context.nextKeystream = data.keystream[index + contiguousSize];
-    return context;
-}
+#ifdef BKCRACK_HAS_AVX512
+// Keep the shared Z traversal on the baseline ISA for the AVX512 worker too.
+template void Attack::exploreZlists<AttackAvx512>(int);
+#endif
 
-void Attack::verifyXlist(const ZPathContext& context, const AttackCandidate& candidate)
+void Attack::verifyXlist()
 {
-    const auto index = context.index;
-
-    // Reconstruct X7 locally; verification must not modify the producer's search state.
-    auto x7 = std::uint32_t{lsb(candidate.packedX)};
-    for (auto i = 5; i <= 7; ++i)
-        x7 = (Crc32Tab::crc32(x7, data.plaintext[index + i - 1]) & mask<8, 32>) |
-             ((candidate.packedX >> (8 * (i - 4))) & mask<0, 8>);
+    // compute X7
+    for (auto i = 5; i <= 7; i++)
+        xlist[i] = (Crc32Tab::crc32(xlist[i - 1], data.plaintext[index + i - 1]) & mask<8, 32>) // discard the LSB
+                   | lsb(xlist[i]);                                                             // set the LSB
 
     // compute X3
-    auto x = x7;
+    auto x = xlist[7];
     for (auto i = 6; i >= 3; i--)
         x = Crc32Tab::crc32inv(x, data.plaintext[index + i]);
 
     // decipher and filter by comparing with remaining contiguous plaintext forward
-    auto keysForward = Keys{x7, candidate.y7, context.z[7]};
+    auto keysForward = Keys{xlist[7], ylist[7], zlist[7]};
     keysForward.update(data.plaintext[index + 7]);
     for (auto p = data.plaintext.begin() + index + 8, c = data.ciphertext.begin() + data.offset + index + 8;
          p != data.plaintext.end(); ++p, ++c)
@@ -123,7 +104,7 @@ void Attack::verifyXlist(const ZPathContext& context, const AttackCandidate& can
     auto indexForward = data.offset + data.plaintext.size();
 
     // and also backward
-    auto keysBackward = Keys{x, candidate.y3, context.z[3]};
+    auto keysBackward = Keys{x, ylist[3], zlist[3]};
     for (auto p = std::reverse_iterator{data.plaintext.begin() + index + 3},
               c = std::reverse_iterator{data.ciphertext.begin() + data.offset + index + 3};
          p != data.plaintext.rend(); ++p, ++c)
