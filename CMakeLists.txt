@@ -8,6 +8,11 @@ project(bkcrack
     LANGUAGES CXX)
 set(bkcrack_VERSION_DATE "2025-10-25")
 
+# Keep C++ source and string-literal encoding independent of the Windows code page.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    add_compile_options(/utf-8)
+endif()
+
 # default build type
 set(default_build_type "Release")
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
