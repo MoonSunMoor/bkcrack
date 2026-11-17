@@ -216,12 +216,25 @@ TEST("generated inputs with short and shifted attack windows")
                 if (length == 8)
                     for (const auto i : {10, 12, 14, 16})
                         extra[offset + i] = plain[plainStart + i];
-                const auto data       = Data{std::move(cipher),
-                                             {},
-                                             {plain.begin() + plainStart, plain.begin() + plainStart + length},
+                const auto data            = Data{std::move(cipher),
+                                                  {},
+                                                  {plain.begin() + plainStart, plain.begin() + plainStart + length},
                                        offset,
                                        extra};
-                const auto candidates = std::vector<std::uint32_t>{0, z & mask<2, 32>, 0x10000000, 0x20000000};
+                const auto candidates      = std::vector<std::uint32_t>{0, z & mask<2, 32>, 0x10000000, 0x20000000};
+                auto       workerSolutions = std::vector<Keys>{};
+                auto       workerMutex     = std::mutex{};
+                auto       workerLog       = std::ostringstream{};
+                auto       workerProgress  = Progress{workerLog};
+                auto       worker = Attack{data, windowEnd, workerSolutions, workerMutex, true, workerProgress};
+                for (const auto candidate : candidates)
+                    worker.carryout(candidate);
+                CHECK(workerSolutions.size() == 1);
+                CHECK(workerSolutions[0].getX() == initial[0]);
+                CHECK(workerSolutions[0].getY() == initial[1]);
+                CHECK(workerSolutions[0].getZ() == initial[2]);
+                CHECK(workerProgress.state == Progress::State::Normal);
+
                 for (const auto jobs : {1, 2, 4, 8})
                 {
                     auto       start    = 0;

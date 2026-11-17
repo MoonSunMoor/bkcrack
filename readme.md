@@ -54,6 +54,13 @@ cmake --build build --config Release
 cmake --build build --config Release --target install
 ```
 
+On x86-64 with a compatible GCC, Clang or MSVC compiler, the build includes an AVX512 attack kernel.
+It is selected automatically when the CPU and operating system support AVX512F, AVX512BW,
+AVX512CD and GFNI. MSVC builds also check the additional CPU features enabled by `/arch:AVX512`,
+including AVX512DQ and AVX512VL. Other systems use the scalar implementation.
+To build only the scalar implementation, add
+`-DBKCRACK_ENABLE_AVX512=OFF` to the CMake configuration command.
+
 ### Third-party packages
 
 bkcrack is available in the package repositories listed below.

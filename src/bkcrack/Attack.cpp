@@ -2,12 +2,11 @@
 
 #include <bkcrack/Crc32Tab.hpp>
 #include <bkcrack/KeystreamTab.hpp>
-#include <bkcrack/MultTab.hpp>
 #include <bkcrack/log.hpp>
 
-#include <algorithm>
-#include <atomic>
-#include <thread>
+#ifdef BKCRACK_HAS_AVX512
+#include "AttackAvx512.hpp"
+#endif
 
 namespace
 {
@@ -37,9 +36,10 @@ Attack::Attack(const Data& data, std::size_t index, std::vector<Keys>& solutions
 void Attack::carryout(std::uint32_t z7_2_32)
 {
     zlist[7] = z7_2_32;
-    exploreZlists(7);
+    exploreZlists<Attack>(7);
 }
 
+template <class Worker>
 void Attack::exploreZlists(int i)
 {
     if (i != 0) // the Z-list is not complete so generate Z{i-1}[2,32) values
@@ -61,7 +61,7 @@ void Attack::exploreZlists(int i)
             if (i < 7)
                 ylist[i + 1] = Crc32Tab::getYi_24_32(zlist[i + 1], zlist[i]);
 
-            exploreZlists(i - 1);
+            exploreZlists<Worker>(i - 1);
         }
     }
     else // the Z-list is complete so iterate over possible Y values
@@ -69,56 +69,14 @@ void Attack::exploreZlists(int i)
         // This constraint is shared by every Y candidate for the completed Z-list.
         y1Constraint = Crc32Tab::getYi_24_32(zlist[1], zlist[0]) & mask<26, 32>;
 
-        // Guess Y3[8,24) and use the Y2 bound to enumerate exact Y3 low bytes.
-        const auto y3High = ylist[3] & mask<24, 32>;
-        const auto bound  = maxdiff<24> + (ylist[2] & mask<24, 32>);
-        for (auto middle = std::uint32_t{}, prod = MultTab::multInv * y3High - MultTab::multInv; middle < 1u << 24;
-             middle += 1u << 8, prod += MultTab::multInv << 8)
-        {
-            const auto& fiber = MultTab::getExactProdFiber(bound - prod);
-            for (const auto low : fiber)
-            {
-                ylist[3] = y3High | middle | low;
-                exploreYlists(3);
-            }
-        }
+        static_cast<Worker&>(*this).exploreYlists();
     }
 }
 
-void Attack::exploreYlists(int i)
-{
-    if (i != 7)
-    {
-        const auto base  = MultTab::mult * ylist[i] + 1;
-        const auto upper = (ylist[i + 1] & mask<24, 32>)+mask<0, 24>;
-        const auto fiber = MultTab::getForwardFiber(upper - base);
-        if (fiber.keepFirst)
-        {
-            xlist[i + 1] = fiber.first;
-            ylist[i + 1] = upper - fiber.residualFirst;
-            exploreYlists(i + 1);
-        }
-        if (fiber.keepSecond)
-        {
-            xlist[i + 1] = fiber.second;
-            ylist[i + 1] = upper - fiber.residualSecond;
-            exploreYlists(i + 1);
-        }
-    }
-    else
-        testXlist();
-}
-
-void Attack::testXlist()
-{
-    // Reject candidates using only low X3 before reconstructing the full X states.
-    const auto x3_0_8 =
-        Crc32Tab::getXim4_0_8(lsb(xlist[4]), lsb(xlist[5]), lsb(xlist[6]), lsb(xlist[7]), x3PlaintextBias);
-    if (((ylist[3] - 1) * MultTab::multInv - x3_0_8 - 1) * MultTab::multInv - y1Constraint > maxdiff<26>)
-        return;
-
-    verifyXlist();
-}
+#ifdef BKCRACK_HAS_AVX512
+// Keep the shared Z traversal on the baseline ISA for the AVX512 worker too.
+template void Attack::exploreZlists<AttackAvx512>(int);
+#endif
 
 void Attack::verifyXlist()
 {
@@ -193,41 +151,4 @@ void Attack::verifyXlist()
 
     if (!exhaustive)
         progress.state = Progress::State::EarlyExit;
-}
-
-auto attack(const Data& data, const std::vector<std::uint32_t>& zi_2_32_vector, int& start, std::size_t index, int jobs,
-            const bool exhaustive, Progress& progress) -> std::vector<Keys>
-{
-    const auto* candidates = zi_2_32_vector.data();
-    const auto  size       = static_cast<int>(zi_2_32_vector.size());
-
-    auto solutions      = std::vector<Keys>{};
-    auto solutionsMutex = std::mutex{};
-    auto worker         = Attack{data, index, solutions, solutionsMutex, exhaustive, progress};
-
-    progress.done  = start;
-    progress.total = size;
-
-    const auto threadCount        = std::clamp(jobs, 1, size);
-    auto       threads            = std::vector<std::thread>{};
-    auto       nextCandidateIndex = std::atomic<int>{start};
-    for (auto i = 0; i < threadCount; ++i)
-        threads.emplace_back(
-            [&nextCandidateIndex, size, &progress, candidates, worker]() mutable
-            {
-                for (auto i = nextCandidateIndex++; i < size; i = nextCandidateIndex++)
-                {
-                    worker.carryout(candidates[i]);
-                    progress.done++;
-
-                    if (progress.state != Progress::State::Normal)
-                        break;
-                }
-            });
-    for (auto& thread : threads)
-        thread.join();
-
-    start = std::min(nextCandidateIndex.load(), size);
-
-    return solutions;
 }

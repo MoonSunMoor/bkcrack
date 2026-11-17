@@ -35,8 +35,14 @@ public:
     static constexpr std::size_t attackSize = 12;
 
 private:
-    // iterate recursively over Z-lists
+    friend class AttackAvx512;
+
+    // iterate recursively over Z-lists with a compile-time Y search choice
+    template <class Worker>
     void exploreZlists(int i);
+
+    // enumerate Y3 roots for a completed Z path
+    void exploreYlists();
 
     // explore Y3 to Y7 using the known high bytes
     void exploreYlists(int i);
