@@ -89,7 +89,9 @@ Index Encryption Compression CRC32    Uncompressed  Packed size Name
 ")
 
 add_test(NAME cli.version COMMAND bkcrack --version)
-set_tests_properties(cli.version PROPERTIES PASS_REGULAR_EXPRESSION "^bkcrack ${bkcrack_VERSION} - ${bkcrack_VERSION_DATE}\n\$")
+string(REPLACE "." "[.]" bkcrack_VERSION_REGEX "${bkcrack_DISPLAY_VERSION}")
+string(REPLACE "+" "[+]" bkcrack_VERSION_REGEX "${bkcrack_VERSION_REGEX}")
+set_tests_properties(cli.version PROPERTIES PASS_REGULAR_EXPRESSION "^bkcrack ${bkcrack_VERSION_REGEX} - ${bkcrack_VERSION_DATE}\n\$")
 
 add_test(NAME cli.help COMMAND bkcrack -h)
 set_tests_properties(cli.help PROPERTIES PASS_REGULAR_EXPRESSION "usage:")

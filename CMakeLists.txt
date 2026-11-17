@@ -6,7 +6,8 @@ project(bkcrack
     DESCRIPTION "Crack legacy zip encryption with Biham and Kocher's known plaintext attack."
     HOMEPAGE_URL "https://github.com/kimci86/bkcrack"
     LANGUAGES CXX)
-set(bkcrack_VERSION_DATE "2025-10-25")
+set(bkcrack_DISPLAY_VERSION "${bkcrack_VERSION}+msm.1")
+set(bkcrack_VERSION_DATE "2026-11-17")
 
 # Keep C++ source and string-literal encoding independent of the Windows code page.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -86,6 +87,7 @@ install(FILES readme.md DESTINATION .)
 install(FILES license.txt DESTINATION .)
 
 # package generation
+set(CPACK_PACKAGE_VERSION "${bkcrack_DISPLAY_VERSION}")
 if(WIN32)
     set(CPACK_GENERATOR "ZIP")
 else()
