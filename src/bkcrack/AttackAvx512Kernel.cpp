@@ -46,7 +46,7 @@ struct RootFiber
     __mmask16 keepFirst, keepSecond;
 };
 
-auto getRootFiber(__m512i difference) -> RootFiber
+auto getRootFiber(__m512i difference, __mmask16 eligible) -> RootFiber
 {
     const auto even = _mm512_mul_epu32(difference, broadcast(311));
     const auto odd  = _mm512_mul_epu32(_mm512_srli_epi64(difference, 32), broadcast(311));
@@ -67,10 +67,10 @@ auto getRootFiber(__m512i difference) -> RootFiber
         _mm512_sub_epi32(_mm512_mask_blend_epi32(negative, broadcast(multInv * 86), broadcast(multInv * 225)),
                          _mm512_maskz_mov_epi32(wrap, broadcast(multInv * 311)));
     const auto      residualSecond = _mm512_sub_epi32(residualFirst, correction);
-    const __mmask16 keepFirst =
-        _mm512_cmplt_epu32_mask(first, broadcast(256)) & _mm512_cmple_epu32_mask(residualFirst, broadcast(fiberWidth));
-    const __mmask16 keepSecond = _mm512_cmplt_epu32_mask(second, broadcast(256)) &
-                                 _mm512_cmple_epu32_mask(residualSecond, broadcast(fiberWidth));
+    const __mmask16 keepFirst      = _mm512_mask_cmple_epu32_mask(
+        _mm512_mask_cmplt_epu32_mask(eligible, first, broadcast(256)), residualFirst, broadcast(fiberWidth));
+    const __mmask16 keepSecond = _mm512_mask_cmple_epu32_mask(
+        _mm512_mask_cmplt_epu32_mask(eligible, second, broadcast(256)), residualSecond, broadcast(fiberWidth));
     return {first, second, keepFirst, keepSecond};
 }
 
@@ -83,7 +83,7 @@ struct ForwardFiber
 
 // Bytes u satisfying uint32(difference - mult*u) < yRange.
 // Since 32*mult = 2^32 + forwardGridStep, u mod 32 is cell or (cell-1) mod 32.
-auto getForwardFiber(__m512i difference) -> ForwardFiber
+auto getForwardFiber(__m512i difference, __mmask16 eligible) -> ForwardFiber
 {
     const auto cell   = _mm512_srli_epi32(difference, 27);
     const auto offset = _mm512_sub_epi32(difference, _mm512_mullo_epi32(cell, broadcast(mult)));
@@ -105,9 +105,9 @@ auto getForwardFiber(__m512i difference) -> ForwardFiber
     const auto residualSecond =
         _mm512_sub_epi32(secondOffset, _mm512_mask_blend_epi32(quotient7, broadcast(6 * forwardGridStep),
                                                                broadcast(7 * forwardGridStep)));
-    const __mmask16 keepFirst = _mm512_cmplt_epu32_mask(offset, broadcast(forwardCellWidth)) &
-                                _mm512_cmplt_epu32_mask(residualFirst, broadcast(yRange));
-    const auto keepSecond = _mm512_cmplt_epu32_mask(residualSecond, broadcast(yRange));
+    const __mmask16 keepFirst = _mm512_mask_cmplt_epu32_mask(
+        _mm512_mask_cmplt_epu32_mask(eligible, offset, broadcast(forwardCellWidth)), residualFirst, broadcast(yRange));
+    const auto keepSecond = _mm512_mask_cmplt_epu32_mask(eligible, residualSecond, broadcast(yRange));
     return {first, second, residualFirst, residualSecond, keepFirst, keepSecond};
 }
 
@@ -181,14 +181,14 @@ struct SearchState
         static_assert(Depth >= 1 && Depth <= 4);
         constexpr auto  shift         = 8 * (Depth - 1);
         constexpr auto  bit           = 1u << Depth;
-        const __mmask16 fresh         = active & _mm512_cmplt_epu32_mask(start, broadcast(Depth));
-        const __mmask16 resume        = active & _mm512_cmpeq_epi32_mask(start, broadcast(Depth));
+        const __mmask16 fresh         = _mm512_mask_cmplt_epu32_mask(active, start, broadcast(Depth));
+        const __mmask16 resume        = _mm512_mask_cmpeq_epi32_mask(active, start, broadcast(Depth));
         const __mmask16 participating = fresh | resume;
         const auto      base          = _mm512_add_epi32(_mm512_mullo_epi32(current, broadcast(mult)), broadcast(1));
         const auto      upper         = broadcast(context.yHigh[Depth + 1] + (yRange - 1));
-        const auto      fiber         = getForwardFiber(_mm512_sub_epi32(upper, base));
-        const __mmask16 keepFirst     = fresh & fiber.keepFirst;
-        const __mmask16 keepSecond    = fresh & fiber.keepSecond;
+        const auto      fiber         = getForwardFiber(_mm512_sub_epi32(upper, base), fresh);
+        const __mmask16 keepFirst     = fiber.keepFirst;
+        const __mmask16 keepSecond    = fiber.keepSecond;
         const __mmask16 both          = keepFirst & keepSecond;
         const __mmask16 accepted      = keepFirst | keepSecond | resume;
         const auto      u =
@@ -225,21 +225,23 @@ __declspec(noinline)
     while (true)
     {
         const auto      pending = _mm512_test_epi32_mask(state.pending, state.pending);
-        const __mmask16 fetch   = ~pending & _mm512_cmplt_epu32_mask(state.next, broadcast(65536));
-        auto            active  = static_cast<__mmask16>(pending | fetch);
+        const __mmask16 fetch =
+            _mm512_mask_cmplt_epu32_mask(static_cast<__mmask16>(~pending), state.next, broadcast(65536));
+        auto active = static_cast<__mmask16>(pending | fetch);
         if (!active)
             break;
 
         auto start                 = _mm512_sub_epi32(broadcast(31), _mm512_lzcnt_epi32(state.pending));
         start                      = _mm512_maskz_mov_epi32(pending, start);
-        const __mmask16 resumeRoot = pending & _mm512_cmpeq_epi32_mask(start, _mm512_setzero_si512());
+        const __mmask16 resumeRoot = _mm512_mask_cmpeq_epi32_mask(pending, start, _mm512_setzero_si512());
         const __mmask16 rootWork   = fetch | resumeRoot;
         const auto      base       = _mm512_or_si512(rootHigh, _mm512_slli_epi32(state.next, 8));
         state.next                 = _mm512_mask_add_epi32(state.next, fetch, state.next, broadcast(16));
         const auto fiber           = getRootFiber(
-            _mm512_sub_epi32(rootBound, _mm512_mullo_epi32(_mm512_sub_epi32(base, broadcast(1)), broadcast(multInv))));
-        const __mmask16 keepFirst  = fetch & fiber.keepFirst;
-        const __mmask16 keepSecond = fetch & fiber.keepSecond;
+            _mm512_sub_epi32(rootBound, _mm512_mullo_epi32(_mm512_sub_epi32(base, broadcast(1)), broadcast(multInv))),
+            fetch);
+        const __mmask16 keepFirst  = fiber.keepFirst;
+        const __mmask16 keepSecond = fiber.keepSecond;
         const __mmask16 both       = keepFirst & keepSecond;
         const __mmask16 accepted   = keepFirst | keepSecond | resumeRoot;
         const auto generated = _mm512_or_si512(base, _mm512_mask_blend_epi32(keepFirst, fiber.second, fiber.first));
