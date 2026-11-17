@@ -222,3 +222,7 @@ License
 -------
 
 This project is provided under the terms of the [zlib/png license](http://opensource.org/licenses/Zlib).
+
+This is a modified fork of [bkcrack](https://github.com/kimci86/bkcrack)
+by Joachim Hotonnier. The fork includes known-plaintext attack
+optimizations and an AVX-512 attack kernel.
